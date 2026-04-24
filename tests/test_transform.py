@@ -33,7 +33,7 @@ class TransformTests(unittest.TestCase):
 
     def test_prepares_thinking_request_and_converts_legacy_functions(self) -> None:
         payload = {
-            "model": "gpt-4o",
+            "model": "deepseek-v4-flash",
             "messages": [{"role": "user", "content": "hi"}],
             "functions": [{"name": "lookup", "parameters": {"type": "object"}}],
             "function_call": {"name": "lookup"},
@@ -44,7 +44,7 @@ class TransformTests(unittest.TestCase):
 
         prepared = prepare_upstream_request(payload, config, self.store)
 
-        self.assertEqual(prepared.original_model, "gpt-4o")
+        self.assertEqual(prepared.original_model, "deepseek-v4-flash")
         self.assertEqual(prepared.upstream_model, "deepseek-v4-pro")
         self.assertEqual(prepared.payload["model"], "deepseek-v4-pro")
         self.assertEqual(prepared.payload["thinking"], {"type": "enabled"})
@@ -493,10 +493,12 @@ class TransformTests(unittest.TestCase):
         ).encode()
 
         request_messages = [{"role": "user", "content": "inspect repo"}]
-        rewritten = rewrite_response_body(body, "gpt-4o", self.store, request_messages)
+        rewritten = rewrite_response_body(
+            body, "deepseek-v4-flash", self.store, request_messages
+        )
         payload = json.loads(rewritten)
 
-        self.assertEqual(payload["model"], "gpt-4o")
+        self.assertEqual(payload["model"], "deepseek-v4-flash")
         self.assertEqual(
             self.store.get(
                 f"scope:{conversation_scope(request_messages)}:tool_call:call_abc"

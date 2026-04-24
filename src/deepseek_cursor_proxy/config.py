@@ -132,7 +132,7 @@ class ProxyConfig:
     verbose: bool = False
     log_bodies: bool = False
     ngrok: bool = False
-    model_list: tuple[str, ...] = ("deepseek-v4-pro", "deepseek-v4-flash", "gpt-4o")
+    model_list: tuple[str, ...] = ("deepseek-v4-pro", "deepseek-v4-flash")
 
     @classmethod
     def from_env(
@@ -173,7 +173,7 @@ class ProxyConfig:
             model_list=env_tuple(
                 values,
                 "PROXY_MODELS",
-                ("deepseek-v4-pro", "deepseek-v4-flash", "gpt-4o"),
+                ("deepseek-v4-pro", "deepseek-v4-flash"),
             ),
         )
 
