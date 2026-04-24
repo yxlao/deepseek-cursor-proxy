@@ -5,7 +5,7 @@ Compatibility proxy connecting Cursor to DeepSeek thinking models (`deepseek-v4-
 ## What It Does
 
 - ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
-- ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text such that thinking tokens are shown in Cursor's UI. For BYOK/proxy mode, Cursor renders this as normal chat text, not as a native collapsible Thinking block.
+- ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text such that thinking tokens are shown in Cursor's UI. For BYOK/proxy mode, Cursor renders this as normal text, not as a native collapsible thinking block.
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy.
 - ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
 
