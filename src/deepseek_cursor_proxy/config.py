@@ -35,6 +35,7 @@ max_request_body_bytes: 20971520
 cors: false
 
 reasoning_content_path: reasoning_content.sqlite3
+missing_reasoning_strategy: reject
 reasoning_cache_max_age_seconds: 604800
 reasoning_cache_max_rows: 10000
 """
@@ -171,6 +172,7 @@ class ProxyConfig:
     request_timeout: float = 300.0
     max_request_body_bytes: int = 20 * 1024 * 1024
     reasoning_content_path: Path = field(default_factory=default_reasoning_content_path)
+    missing_reasoning_strategy: str = "reject"
     reasoning_cache_max_age_seconds: int = 7 * 24 * 60 * 60
     reasoning_cache_max_rows: int = 10000
     cursor_display_reasoning: bool = True
@@ -204,6 +206,22 @@ class ProxyConfig:
             thinking = "pass-through"
         if thinking not in {"enabled", "disabled", "pass-through"}:
             thinking = "enabled"
+
+        missing_reasoning_strategy = (
+            as_str(
+                setting_value(
+                    settings,
+                    live_env,
+                    "missing_reasoning_strategy",
+                    "MISSING_REASONING_STRATEGY",
+                ),
+                "reject",
+            )
+            .strip()
+            .lower()
+        )
+        if missing_reasoning_strategy not in {"reject", "placeholder"}:
+            missing_reasoning_strategy = "reject"
 
         return cls(
             host=as_str(
@@ -289,6 +307,7 @@ class ProxyConfig:
                 default_reasoning_content_path(),
                 config_dir,
             ),
+            missing_reasoning_strategy=missing_reasoning_strategy,
             reasoning_cache_max_age_seconds=as_int(
                 setting_value(
                     settings,

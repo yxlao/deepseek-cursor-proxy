@@ -23,7 +23,11 @@ from .config import (
 from .reasoning_store import ReasoningStore, conversation_scope
 from .streaming import CursorReasoningDisplayAdapter, StreamAccumulator
 from .tunnel import NgrokTunnel, local_tunnel_target
-from .transform import prepare_upstream_request, rewrite_response_body
+from .transform import (
+    PLACEHOLDER_REASONING_CONTENT,
+    prepare_upstream_request,
+    rewrite_response_body,
+)
 
 
 LOG = logging.getLogger("deepseek_cursor_proxy")
@@ -135,7 +139,20 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 "restored reasoning_content on %s assistant message(s)",
                 prepared.patched_reasoning_messages,
             )
+        if prepared.placeholder_reasoning_messages:
+            LOG.warning(
+                (
+                    "inserted placeholder reasoning_content on %s assistant "
+                    "message(s); this is compatibility mode and may still be "
+                    "rejected by DeepSeek"
+                ),
+                prepared.placeholder_reasoning_messages,
+            )
         if prepared.missing_reasoning_messages:
+            diagnostic_placeholder = (
+                f"{PLACEHOLDER_REASONING_CONTENT} "
+                "[not sent upstream because missing_reasoning_strategy=reject]"
+            )
             LOG.warning(
                 "rejected request path=%s status=409 reason=missing_reasoning_content count=%s",
                 request_path,
@@ -147,11 +164,16 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     "error": {
                         "message": (
                             "Missing cached DeepSeek reasoning_content for a "
-                            "thinking-mode tool-call history. Retry the tool-call "
-                            "turn so the proxy can capture the original reasoning."
+                            f"thinking-mode tool-call history on "
+                            f"{prepared.missing_reasoning_messages} assistant "
+                            "message(s). This usually means the chat has tool-call "
+                            "turns that were not captured by this proxy/cache. Start "
+                            "a new chat or retry from the original tool-call turn."
                         ),
                         "type": "missing_reasoning_content",
                         "code": "missing_reasoning_content",
+                        "missing_reasoning_messages": prepared.missing_reasoning_messages,
+                        "diagnostic_placeholder": diagnostic_placeholder,
                     }
                 },
             )
@@ -520,6 +542,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Do not mirror reasoning_content into Cursor-visible <think> content",
     )
     parser.add_argument(
+        "--missing-reasoning-strategy",
+        choices=["reject", "placeholder"],
+        help=(
+            "What to do when required reasoning_content is missing: reject "
+            "(safe default) or placeholder (unsafe compatibility fallback)"
+        ),
+    )
+    parser.add_argument(
         "--clear-reasoning-cache",
         action="store_true",
         help="Clear the local reasoning_content SQLite cache and exit",
@@ -639,6 +669,8 @@ def main(argv: list[str] | None = None) -> int:
         updates["verbose"] = True
     if args.no_cursor_display_reasoning:
         updates["cursor_display_reasoning"] = False
+    if args.missing_reasoning_strategy:
+        updates["missing_reasoning_strategy"] = args.missing_reasoning_strategy
     if updates:
         config = replace(config, **updates)
 
@@ -664,12 +696,24 @@ def main(argv: list[str] | None = None) -> int:
         config.upstream_model,
     )
     LOG.info(
-        "thinking=%s reasoning_effort=%s cursor_display_reasoning=%s reasoning_content_path=%s",
+        (
+            "thinking=%s reasoning_effort=%s cursor_display_reasoning=%s "
+            "missing_reasoning_strategy=%s reasoning_content_path=%s"
+        ),
         config.thinking,
         config.reasoning_effort,
         config.cursor_display_reasoning,
+        config.missing_reasoning_strategy,
         config.reasoning_content_path,
     )
+    if config.missing_reasoning_strategy == "placeholder":
+        LOG.warning(
+            (
+                "missing_reasoning_strategy=placeholder is not DeepSeek-compliant; "
+                "use only to test old Cursor histories whose original reasoning "
+                "cannot be recovered"
+            )
+        )
     if config.verbose:
         LOG.info("logging mode=verbose metadata=detailed bodies=true")
         LOG.warning(

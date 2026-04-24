@@ -119,6 +119,16 @@ Run without ngrok for local curl testing:
 PROXY_NGROK=false deepseek-cursor-proxy --port 9000 --verbose
 ```
 
+If Cursor shows `missing_reasoning_content`, the current chat contains thinking-mode tool-call history whose original DeepSeek `reasoning_content` is not in the local cache. This commonly happens when continuing an older chat after a proxy restart, cache clear, or cache format/config change. The local 409 response includes a diagnostic placeholder so the cause is visible, but that placeholder is not forwarded to DeepSeek in the default safe mode. Start a new chat, or retry from the original tool-call turn while the proxy is running so it can capture the reasoning.
+
+For debugging an old Cursor history, you can opt into a non-compliant compatibility fallback:
+
+```bash
+deepseek-cursor-proxy --verbose --missing-reasoning-strategy placeholder
+```
+
+This inserts a loud placeholder into missing `reasoning_content` fields and forwards the request. It may still be rejected by DeepSeek and should not be used for normal work.
+
 Use another config file:
 
 ```bash

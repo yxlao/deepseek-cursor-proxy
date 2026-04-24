@@ -18,5 +18,6 @@ max_request_body_bytes: 20971520
 cors: false
 
 reasoning_content_path: reasoning_content.sqlite3
+missing_reasoning_strategy: reject
 reasoning_cache_max_age_seconds: 604800
 reasoning_cache_max_rows: 10000

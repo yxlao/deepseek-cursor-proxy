@@ -6,6 +6,7 @@ import unittest
 from deepseek_cursor_proxy.config import ProxyConfig
 from deepseek_cursor_proxy.reasoning_store import ReasoningStore, conversation_scope
 from deepseek_cursor_proxy.transform import (
+    PLACEHOLDER_REASONING_CONTENT,
     extract_text_content,
     prepare_upstream_request,
     reasoning_cache_namespace,
@@ -562,6 +563,47 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(prepared.patched_reasoning_messages, 0)
         self.assertEqual(prepared.missing_reasoning_messages, 1)
         self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
+
+    def test_can_insert_placeholder_for_uncached_assistant_tool_call(self) -> None:
+        payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "user", "content": "read README"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_uncached",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"README.md"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_uncached",
+                    "content": "file text",
+                },
+            ],
+        }
+
+        prepared = prepare_upstream_request(
+            payload,
+            ProxyConfig(missing_reasoning_strategy="placeholder"),
+            self.store,
+        )
+
+        self.assertEqual(prepared.patched_reasoning_messages, 0)
+        self.assertEqual(prepared.placeholder_reasoning_messages, 1)
+        self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(
+            prepared.payload["messages"][1]["reasoning_content"],
+            PLACEHOLDER_REASONING_CONTENT,
+        )
 
     def test_reports_missing_reasoning_for_uncached_assistant_after_tool_result(
         self,

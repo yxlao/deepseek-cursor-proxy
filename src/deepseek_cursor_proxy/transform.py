@@ -67,6 +67,13 @@ CURSOR_THINKING_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+PLACEHOLDER_REASONING_CONTENT = (
+    "[deepseek-cursor-proxy placeholder reasoning_content: original DeepSeek "
+    "reasoning_content was missing from Cursor history and unavailable in the "
+    "local cache. This is an opt-in compatibility fallback, not the original "
+    "model reasoning.]"
+)
+
 
 @dataclass(frozen=True)
 class PreparedRequest:
@@ -75,6 +82,7 @@ class PreparedRequest:
     upstream_model: str
     cache_namespace: str
     patched_reasoning_messages: int
+    placeholder_reasoning_messages: int
     missing_reasoning_messages: int
 
 
@@ -195,7 +203,8 @@ def normalize_message(
     cache_namespace: str,
     repair_reasoning: bool,
     keep_reasoning: bool,
-) -> tuple[dict[str, Any], bool, bool]:
+    missing_reasoning_strategy: str,
+) -> tuple[dict[str, Any], bool, bool, bool]:
     if not isinstance(message, dict):
         message = {"role": "user", "content": str(message)}
     normalized = {key: value for key, value in message.items() if key in MESSAGE_FIELDS}
@@ -219,6 +228,7 @@ def normalize_message(
         ]
 
     patched = False
+    placeholder = False
     missing = False
     if normalized["role"] == "assistant":
         if not keep_reasoning:
@@ -239,13 +249,17 @@ def normalize_message(
                         normalized["reasoning_content"] = restored
                         patched = True
                 if needs_reasoning and not patched:
-                    missing = True
+                    if missing_reasoning_strategy == "placeholder":
+                        normalized["reasoning_content"] = PLACEHOLDER_REASONING_CONTENT
+                        placeholder = True
+                    else:
+                        missing = True
 
     allowed_fields = ROLE_MESSAGE_FIELDS.get(str(normalized["role"]), MESSAGE_FIELDS)
     normalized = {
         key: value for key, value in normalized.items() if key in allowed_fields
     }
-    return normalized, patched, missing
+    return normalized, patched, placeholder, missing
 
 
 def normalize_messages(
@@ -254,27 +268,32 @@ def normalize_messages(
     cache_namespace: str,
     repair_reasoning: bool,
     keep_reasoning: bool,
-) -> tuple[list[dict[str, Any]], int, int]:
+    missing_reasoning_strategy: str,
+) -> tuple[list[dict[str, Any]], int, int, int]:
     if not isinstance(messages, list):
-        return [], 0, 0
+        return [], 0, 0, 0
     normalized_messages: list[dict[str, Any]] = []
     patched_count = 0
+    placeholder_count = 0
     missing_count = 0
     for message in messages:
-        normalized, patched, missing = normalize_message(
+        normalized, patched, placeholder, missing = normalize_message(
             message,
             store,
             normalized_messages,
             cache_namespace,
             repair_reasoning,
             keep_reasoning,
+            missing_reasoning_strategy,
         )
         normalized_messages.append(normalized)
         if patched:
             patched_count += 1
+        if placeholder:
+            placeholder_count += 1
         if missing:
             missing_count += 1
-    return normalized_messages, patched_count, missing_count
+    return normalized_messages, patched_count, placeholder_count, missing_count
 
 
 def assistant_needs_reasoning_for_tool_context(
@@ -376,12 +395,13 @@ def prepare_upstream_request(
         prepared.get("reasoning_effort"),
         authorization,
     )
-    messages, patched_count, missing_count = normalize_messages(
+    messages, patched_count, placeholder_count, missing_count = normalize_messages(
         payload.get("messages"),
         store,
         cache_namespace,
         repair_reasoning=thinking_enabled,
         keep_reasoning=not thinking_disabled,
+        missing_reasoning_strategy=config.missing_reasoning_strategy,
     )
     prepared["messages"] = messages
 
@@ -391,6 +411,7 @@ def prepare_upstream_request(
         upstream_model=upstream_model,
         cache_namespace=cache_namespace,
         patched_reasoning_messages=patched_count,
+        placeholder_reasoning_messages=placeholder_count,
         missing_reasoning_messages=missing_count,
     )
 

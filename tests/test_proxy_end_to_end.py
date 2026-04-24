@@ -16,7 +16,10 @@ from deepseek_cursor_proxy.reasoning_store import (
     message_signature,
 )
 from deepseek_cursor_proxy.server import DeepSeekProxyHandler, DeepSeekProxyServer
-from deepseek_cursor_proxy.transform import reasoning_cache_namespace
+from deepseek_cursor_proxy.transform import (
+    PLACEHOLDER_REASONING_CONTENT,
+    reasoning_cache_namespace,
+)
 
 
 TOOL_REASONING = "I need the current date before answering."
@@ -608,13 +611,38 @@ class ProxyEndToEndTests(unittest.TestCase):
     def test_proxy_rejects_uncached_cursor_tool_history_without_placeholder(
         self,
     ) -> None:
-        status, _ = post_json(
+        status, payload = post_json(
             f"{self.proxy.url}/v1/chat/completions",
             second_cursor_request(include_reasoning=False),
         )
 
         self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["missing_reasoning_messages"], 1)
+        self.assertIn("1 assistant message", payload["error"]["message"])
+        self.assertIn(
+            "not sent upstream",
+            payload["error"]["diagnostic_placeholder"],
+        )
         self.assertEqual(FakeDeepSeekHandler.requests, [])
+
+    def test_proxy_can_forward_placeholder_for_uncached_cursor_tool_history(
+        self,
+    ) -> None:
+        self.proxy.server.config = replace(
+            self.proxy.server.config,
+            missing_reasoning_strategy="placeholder",
+        )
+
+        status, _ = post_json(
+            f"{self.proxy.url}/v1/chat/completions",
+            second_cursor_request(include_reasoning=False),
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            FakeDeepSeekHandler.requests[0]["messages"][1]["reasoning_content"],
+            PLACEHOLDER_REASONING_CONTENT,
+        )
 
 
 class InterleavedConversationTests(unittest.TestCase):
