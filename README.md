@@ -69,15 +69,30 @@ Note: you can toggle the custom API on and off with:
 Install and run the proxy:
 
 ```bash
+# Or, use your favourite Python package manager
 conda create -n dcp python=3.10 -y
 conda activate dcp
+
+# Install
 pip install -e .
-deepseek-cursor-proxy --verbose
+
+# Run in normal mode
+deepseek-cursor-proxy
 ```
 
 The proxy creates `~/.deepseek-cursor-proxy/config.yaml` on first run.
 
 This will also print the ngrok public URL. If it differs from the one in Cursor, update it in Cursor's Base URL field.
+
+Normal mode prints startup info, the ngrok URL, and safe request summaries. It does not print prompts, code, API keys, or request bodies.
+
+For more request lifecycle metadata, use verbose mode:
+
+```bash
+deepseek-cursor-proxy --verbose
+```
+
+Verbose mode adds client/path/upstream metadata and full payload logs. It may print prompts and code to the terminal, so keep it off for normal use.
 
 ### Step 4: Chat with DeepSeek in Cursor
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
@@ -461,6 +462,40 @@ class ProxyEndToEndTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(FakeDeepSeekHandler.auth_headers[0], "Bearer sk-from-cursor")
+
+    def test_normal_mode_logs_safe_request_progress_without_bodies(self) -> None:
+        with self.assertLogs("deepseek_cursor_proxy", level="INFO") as captured:
+            status, _ = post_json(
+                f"{self.proxy.url}/v1/chat/completions",
+                first_cursor_request(),
+                api_key="sk-from-cursor",
+            )
+
+        output = "\n".join(captured.output)
+        self.assertEqual(status, 200)
+        self.assertIn("cursor request: model='deepseek-v4-pro'", output)
+        self.assertIn("request complete status=200", output)
+        self.assertNotIn("What is tomorrow's date?", output)
+        self.assertNotIn("sk-from-cursor", output)
+
+    def test_verbose_mode_logs_metadata_and_bodies_without_api_key(self) -> None:
+        self.proxy.server.config = replace(self.proxy.server.config, verbose=True)
+
+        with self.assertLogs("deepseek_cursor_proxy", level="INFO") as captured:
+            status, _ = post_json(
+                f"{self.proxy.url}/v1/chat/completions",
+                first_cursor_request(),
+                api_key="sk-from-cursor",
+            )
+
+        output = "\n".join(captured.output)
+        self.assertEqual(status, 200)
+        self.assertIn("incoming POST /v1/chat/completions", output)
+        self.assertIn("upstream request metadata", output)
+        self.assertIn("cursor request body", output)
+        self.assertIn("upstream request body", output)
+        self.assertIn("What is tomorrow's date?", output)
+        self.assertNotIn("sk-from-cursor", output)
 
     def test_proxy_rejects_missing_cursor_bearer_token(self) -> None:
         request = Request(

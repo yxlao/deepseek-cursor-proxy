@@ -28,7 +28,6 @@ host: 127.0.0.1
 port: 9000
 ngrok: true
 verbose: false
-log_bodies: false
 request_timeout: 300
 
 reasoning_content_path: reasoning_content.sqlite3
@@ -167,7 +166,6 @@ class ProxyConfig:
     reasoning_content_path: Path = field(default_factory=default_reasoning_content_path)
     cursor_display_reasoning: bool = True
     verbose: bool = False
-    log_bodies: bool = False
     ngrok: bool = False
 
     @classmethod
@@ -287,15 +285,6 @@ class ProxyConfig:
                     live_env,
                     "verbose",
                     "PROXY_VERBOSE",
-                ),
-                False,
-            ),
-            log_bodies=as_bool(
-                setting_value(
-                    settings,
-                    live_env,
-                    "log_bodies",
-                    "PROXY_LOG_BODIES",
                 ),
                 False,
             ),

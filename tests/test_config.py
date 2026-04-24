@@ -135,18 +135,16 @@ class ConfigTests(unittest.TestCase):
             home / ".deepseek-cursor-proxy" / "custom.sqlite3",
         )
 
-    def test_verbose_and_body_logging_can_be_enabled_from_env(self) -> None:
+    def test_verbose_logging_can_be_enabled_from_env(self) -> None:
         config = ProxyConfig.from_file(
             env={
                 "PROXY_VERBOSE": "true",
-                "PROXY_LOG_BODIES": "1",
                 "PROXY_NGROK": "yes",
             },
             config_path=Path("/does/not/exist"),
         )
 
         self.assertTrue(config.verbose)
-        self.assertTrue(config.log_bodies)
         self.assertTrue(config.ngrok)
 
     def test_cursor_reasoning_display_can_be_disabled_from_config(self) -> None:

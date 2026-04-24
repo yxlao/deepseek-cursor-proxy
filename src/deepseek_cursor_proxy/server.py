@@ -84,12 +84,17 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 self.headers.get("User-Agent", ""),
             )
         if request_path not in {"/chat/completions", "/v1/chat/completions"}:
+            LOG.warning("rejected unsupported POST path=%s status=404", request_path)
             self._send_json(
                 404, {"error": {"message": "Only /v1/chat/completions is supported"}}
             )
             return
         cursor_authorization = self._cursor_authorization()
         if cursor_authorization is None:
+            LOG.warning(
+                "rejected request path=%s status=401 reason=missing_bearer_token",
+                request_path,
+            )
             self._send_json(
                 401, {"error": {"message": "Missing Authorization bearer token"}}
             )
@@ -98,14 +103,16 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json_body()
         except ValueError as exc:
+            LOG.warning(
+                "rejected request path=%s status=400 reason=%s", request_path, exc
+            )
             self._send_json(400, {"error": {"message": str(exc)}})
             return
 
-        if self.config.log_bodies:
+        if self.config.verbose:
             log_json("cursor request body", payload)
 
-        if self.config.verbose:
-            LOG.info("cursor request: %s", summarize_chat_payload(payload))
+        LOG.info("cursor request: %s", summarize_chat_payload(payload))
 
         prepared = prepare_upstream_request(payload, self.config, self.reasoning_store)
         if prepared.patched_reasoning_messages:
@@ -132,7 +139,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 summarize_chat_payload(prepared.payload),
             )
 
-        if self.config.log_bodies:
+        if self.config.verbose:
             log_json("upstream request body", prepared.payload)
 
         upstream_body = json.dumps(
@@ -154,31 +161,31 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 LOG.info("forwarding to %s", upstream_url)
             response = urlopen(request, timeout=self.config.request_timeout)
         except HTTPError as exc:
-            if self.config.verbose:
-                LOG.info(
-                    "upstream error status=%s elapsed_ms=%s",
-                    exc.code,
-                    elapsed_ms(started),
-                )
+            LOG.warning(
+                "request failed upstream_status=%s stream=%s elapsed_ms=%s",
+                exc.code,
+                bool(prepared.payload.get("stream")),
+                elapsed_ms(started),
+            )
             self._send_upstream_error(exc)
             return
         except URLError as exc:
-            if self.config.verbose:
-                LOG.warning(
-                    "upstream request failed elapsed_ms=%s reason=%s",
-                    elapsed_ms(started),
-                    exc.reason,
-                )
+            LOG.warning(
+                "upstream request failed elapsed_ms=%s reason=%s",
+                elapsed_ms(started),
+                exc.reason,
+            )
             self._send_json(
                 502, {"error": {"message": f"Upstream request failed: {exc.reason}"}}
             )
             return
 
         with response:
+            upstream_status = getattr(response, "status", 200)
             if self.config.verbose:
                 LOG.info(
                     "upstream response status=%s stream=%s elapsed_ms=%s",
-                    getattr(response, "status", 200),
+                    upstream_status,
                     bool(prepared.payload.get("stream")),
                     elapsed_ms(started),
                 )
@@ -190,6 +197,17 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 self._proxy_regular_response(
                     response, prepared.original_model, prepared.payload["messages"]
                 )
+            LOG.info(
+                (
+                    "request complete status=%s stream=%s elapsed_ms=%s "
+                    "patched_reasoning=%s fallback_reasoning=%s"
+                ),
+                upstream_status,
+                bool(prepared.payload.get("stream")),
+                elapsed_ms(started),
+                prepared.patched_reasoning_messages,
+                prepared.fallback_reasoning_messages,
+            )
 
     def _cursor_authorization(self) -> str | None:
         auth_header = self.headers.get("Authorization", "")
@@ -259,7 +277,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
     def _send_upstream_error(self, exc: HTTPError) -> None:
         body = read_response_body(exc)
-        if self.config.log_bodies:
+        if self.config.verbose:
             log_bytes("upstream error body", body)
         self.send_response(exc.code)
         self._send_cors_headers()
@@ -284,7 +302,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             LOG.warning("failed to rewrite upstream JSON response: %s", exc)
 
-        if self.config.log_bodies:
+        if self.config.verbose:
             log_bytes("cursor response body", body)
 
         self.send_response(getattr(response, "status", 200))
@@ -331,7 +349,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 break
 
         if not finalized:
-            if self.config.log_bodies:
+            if self.config.verbose:
                 log_json("model streaming assistant messages", accumulator.messages())
             stored = accumulator.store_reasoning(self.reasoning_store, scope)
             if stored:
@@ -351,7 +369,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
         data = stripped[len(b"data:") :].strip()
         if data == b"[DONE]":
-            if self.config.log_bodies:
+            if self.config.verbose:
                 log_json("model streaming assistant messages", accumulator.messages())
             stored = accumulator.store_reasoning(self.reasoning_store, scope)
             if stored:
@@ -425,12 +443,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Log request lifecycle metadata without bodies",
-    )
-    parser.add_argument(
-        "--log-bodies",
-        action="store_true",
-        help="Log normalized upstream request bodies",
+        help="Log detailed request lifecycle metadata and full payloads",
     )
     parser.add_argument(
         "--no-cursor-display-reasoning",
@@ -521,8 +534,6 @@ def main(argv: list[str] | None = None) -> int:
         updates["ngrok"] = True
     if args.verbose:
         updates["verbose"] = True
-    if args.log_bodies:
-        updates["log_bodies"] = True
     if args.no_cursor_display_reasoning:
         updates["cursor_display_reasoning"] = False
     if updates:
@@ -547,11 +558,12 @@ def main(argv: list[str] | None = None) -> int:
         config.reasoning_content_path,
     )
     if config.verbose:
-        LOG.info("verbose logging enabled")
-    if config.log_bodies:
+        LOG.info("logging mode=verbose metadata=detailed bodies=true")
         LOG.warning(
-            "request body logging enabled; prompts and code may be written to stdout"
+            "verbose logging enabled; prompts and code may be written to stdout"
         )
+    else:
+        LOG.info("logging mode=normal metadata=safe_summaries bodies=false")
 
     tunnel: NgrokTunnel | None = None
     if config.ngrok:
