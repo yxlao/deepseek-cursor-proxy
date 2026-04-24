@@ -68,48 +68,55 @@ Note: you can toggle the custom API on and off with:
 - macOS: `Cmd+Shift+0`
 - Windows/Linux: `Ctrl+Shift+0`
 
-### Step 3: Start the Proxy Server
+### Step 3: Install and Start the Proxy Server
 
-Install and run the proxy:
-
-```bash
-# Install uv if you don't have it.
-# https://docs.astral.sh/uv/getting-started/installation/
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone the repository
-git clone https://github.com/yxlao/deepseek-cursor-proxy.git
-cd deepseek-cursor-proxy
-
-# Install deepseek-cursor-proxy (editable) and dependencies
-# This creates .venv/ automatically
-uv sync
-source .venv/bin/activate
-
-# Run
-deepseek-cursor-proxy
-```
-
-<details>
-<summary>Alternative: conda</summary>
+**TL;DR Version**
 
 ```bash
-conda create -n dcp python=3.10 -y
-conda activate dcp
-
+# Install (activate your Python environment first)
 git clone https://github.com/yxlao/deepseek-cursor-proxy.git
 cd deepseek-cursor-proxy
 pip install -e .
 
-# Run
+# Start
 deepseek-cursor-proxy
 ```
 
-</details>
+**Full Instructions with UV**
 
-The proxy creates `~/.deepseek-cursor-proxy/config.yaml` on first run.
+```bash
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-This will also print the ngrok public URL. If it differs from the one in Cursor, update it in Cursor's Base URL field.
+# Install
+git clone https://github.com/yxlao/deepseek-cursor-proxy.git
+cd deepseek-cursor-proxy
+uv sync
+source .venv/bin/activate
+
+# Start
+deepseek-cursor-proxy
+```
+
+**Full Instructions with Conda**
+
+```bash
+# Install
+conda create -n dcp python=3.10 -y
+conda activate dcp
+git clone https://github.com/yxlao/deepseek-cursor-proxy.git
+cd deepseek-cursor-proxy
+pip install -e .
+
+# Start
+deepseek-cursor-proxy
+```
+
+On start, `deepseek-cursor-proxy` will print the ngrok public URL. If it differs from the one in Cursor, update it in Cursor's Base URL field.
+
+On the first run, `deepseek-cursor-proxy` will create:
+- `~/.deepseek-cursor-proxy/config.yaml`: the configuration file
+- `~/.deepseek-cursor-proxy/reasoning_content.sqlite3`: the reasoning content cache
 
 ### Step 4: Chat with DeepSeek in Cursor
 
