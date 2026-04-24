@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 from .config import ProxyConfig
@@ -60,6 +61,11 @@ EFFORT_ALIASES = {
     "xhigh": "max",
 }
 
+CURSOR_THINKING_BLOCK_RE = re.compile(
+    r"<(?:think|thinking)>[\s\S]*?(?:</(?:think|thinking)>|$)\s*",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class PreparedRequest:
@@ -100,6 +106,10 @@ def extract_text_content(content: Any) -> str | None:
     if isinstance(content, (dict, tuple)):
         return json.dumps(content, ensure_ascii=False, sort_keys=True)
     return str(content)
+
+
+def strip_cursor_thinking_blocks(content: str) -> str:
+    return CURSOR_THINKING_BLOCK_RE.sub("", content).lstrip("\r\n")
 
 
 def normalize_tool_call(tool_call: Any) -> dict[str, Any]:
@@ -190,6 +200,8 @@ def normalize_message(
         normalized["content"] = extract_text_content(normalized["content"]) or ""
     elif normalized["role"] in {"assistant", "tool", "system", "user"}:
         normalized["content"] = ""
+    if normalized["role"] == "assistant" and isinstance(normalized.get("content"), str):
+        normalized["content"] = strip_cursor_thinking_blocks(normalized["content"])
 
     if normalized.get("tool_calls"):
         normalized["tool_calls"] = [

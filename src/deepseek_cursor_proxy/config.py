@@ -129,6 +129,7 @@ class ProxyConfig:
     reasoning_effort: str = "high"
     request_timeout: float = 300.0
     reasoning_content_path: Path = field(default_factory=default_reasoning_content_path)
+    cursor_display_reasoning: bool = True
     verbose: bool = False
     log_bodies: bool = False
     ngrok: bool = False
@@ -167,6 +168,7 @@ class ProxyConfig:
                 ("REASONING_CONTENT_PATH",),
                 default_reasoning_content_path(),
             ),
+            cursor_display_reasoning=env_bool(values, "CURSOR_DISPLAY_REASONING", True),
             verbose=env_bool(values, "PROXY_VERBOSE", False),
             log_bodies=env_bool(values, "PROXY_LOG_BODIES", False),
             ngrok=env_bool(values, "PROXY_NGROK", False),

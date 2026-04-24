@@ -109,6 +109,17 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.log_bodies)
         self.assertTrue(config.ngrok)
 
+    def test_cursor_reasoning_display_can_be_disabled_from_env(self) -> None:
+        config = ProxyConfig.from_env(
+            env={
+                "DEEPSEEK_API_KEY": "key",
+                "CURSOR_DISPLAY_REASONING": "false",
+            },
+            env_file_path=Path("/does/not/exist"),
+        )
+
+        self.assertFalse(config.cursor_display_reasoning)
+
     def test_config_path_can_be_overridden_from_environment(self) -> None:
         with TemporaryDirectory() as temp_dir:
             first_env_path = Path(temp_dir) / "first.env"

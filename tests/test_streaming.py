@@ -3,7 +3,10 @@ from __future__ import annotations
 import unittest
 
 from deepseek_cursor_proxy.reasoning_store import ReasoningStore, conversation_scope
-from deepseek_cursor_proxy.streaming import StreamAccumulator
+from deepseek_cursor_proxy.streaming import (
+    CursorReasoningDisplayAdapter,
+    StreamAccumulator,
+)
 
 
 class StreamAccumulatorTests(unittest.TestCase):
@@ -101,6 +104,102 @@ class StreamAccumulatorTests(unittest.TestCase):
                 }
             ],
         )
+
+
+class CursorReasoningDisplayAdapterTests(unittest.TestCase):
+    def test_mirrors_reasoning_content_into_think_tagged_content(self) -> None:
+        adapter = CursorReasoningDisplayAdapter()
+        reasoning_chunk = {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "Need context."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        answer_chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "Final answer."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+
+        adapter.rewrite_chunk(reasoning_chunk)
+        adapter.rewrite_chunk(answer_chunk)
+
+        reasoning_delta = reasoning_chunk["choices"][0]["delta"]
+        answer_delta = answer_chunk["choices"][0]["delta"]
+        self.assertEqual(reasoning_delta["reasoning_content"], "Need context.")
+        self.assertEqual(reasoning_delta["content"], "<think>\nNeed context.")
+        self.assertEqual(answer_delta["content"], "\n</think>\n\nFinal answer.")
+
+    def test_closes_thinking_block_before_tool_calls(self) -> None:
+        adapter = CursorReasoningDisplayAdapter()
+        adapter.rewrite_chunk(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": "Need a tool."},
+                    }
+                ]
+            }
+        )
+        tool_chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "lookup", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+
+        adapter.rewrite_chunk(tool_chunk)
+
+        self.assertEqual(tool_chunk["choices"][0]["delta"]["content"], "\n</think>\n\n")
+
+    def test_flush_chunk_closes_unfinished_thinking_block_at_done(self) -> None:
+        adapter = CursorReasoningDisplayAdapter()
+        adapter.rewrite_chunk(
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": "Still thinking."},
+                    }
+                ],
+            }
+        )
+
+        closing_chunk = adapter.flush_chunk("deepseek-v4-pro")
+
+        self.assertIsNotNone(closing_chunk)
+        assert closing_chunk is not None
+        self.assertEqual(closing_chunk["model"], "deepseek-v4-pro")
+        self.assertEqual(
+            closing_chunk["choices"][0]["delta"]["content"], "\n</think>\n\n"
+        )
+        self.assertIsNone(adapter.flush_chunk("deepseek-v4-pro"))
 
 
 if __name__ == "__main__":

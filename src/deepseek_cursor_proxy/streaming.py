@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 from .reasoning_store import ReasoningStore
+
+
+THINKING_BLOCK_START = "<think>\n"
+THINKING_BLOCK_END = "\n</think>\n\n"
 
 
 @dataclass
@@ -109,3 +114,80 @@ class StreamAccumulator:
                 function["arguments"] = (function.get("arguments") or "") + str(
                     function_delta["arguments"]
                 )
+
+
+class CursorReasoningDisplayAdapter:
+    """Mirror reasoning_content into content for Cursor's visible thinking UI path."""
+
+    def __init__(self) -> None:
+        self._open_choices: set[int] = set()
+        self._last_chunk_metadata: dict[str, Any] = {}
+
+    def rewrite_chunk(self, chunk: dict[str, Any]) -> None:
+        self._remember_chunk_metadata(chunk)
+        choices = chunk.get("choices")
+        if not isinstance(choices, list):
+            return
+
+        for raw_choice in choices:
+            if not isinstance(raw_choice, dict):
+                continue
+            index = int(raw_choice.get("index") or 0)
+            delta = raw_choice.get("delta")
+            if not isinstance(delta, dict):
+                delta = {}
+                raw_choice["delta"] = delta
+
+            mirrored_parts: list[str] = []
+            reasoning_content = delta.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                if index not in self._open_choices:
+                    mirrored_parts.append(THINKING_BLOCK_START)
+                    self._open_choices.add(index)
+                mirrored_parts.append(reasoning_content)
+
+            existing_content = delta.get("content")
+            should_close = index in self._open_choices and (
+                bool(existing_content)
+                or bool(delta.get("tool_calls"))
+                or raw_choice.get("finish_reason") is not None
+            )
+            if should_close:
+                mirrored_parts.append(THINKING_BLOCK_END)
+                self._open_choices.discard(index)
+
+            if not mirrored_parts:
+                continue
+            if isinstance(existing_content, str):
+                mirrored_parts.append(existing_content)
+            delta["content"] = "".join(mirrored_parts)
+
+    def flush_chunk(self, model: str) -> dict[str, Any] | None:
+        if not self._open_choices:
+            return None
+
+        choices = [
+            {
+                "index": index,
+                "delta": {"content": THINKING_BLOCK_END},
+                "finish_reason": None,
+            }
+            for index in sorted(self._open_choices)
+        ]
+        self._open_choices.clear()
+
+        chunk: dict[str, Any] = {
+            "id": self._last_chunk_metadata.get("id", "chatcmpl-reasoning-close"),
+            "object": self._last_chunk_metadata.get("object", "chat.completion.chunk"),
+            "created": self._last_chunk_metadata.get("created", int(time.time())),
+            "model": model,
+            "choices": choices,
+        }
+        return chunk
+
+    def _remember_chunk_metadata(self, chunk: dict[str, Any]) -> None:
+        metadata = {
+            key: chunk[key] for key in ("id", "object", "created") if key in chunk
+        }
+        if metadata:
+            self._last_chunk_metadata.update(metadata)
