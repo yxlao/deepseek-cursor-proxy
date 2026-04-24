@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepseek-cursor-proxy"
+version = "0.1.0"
+description = "Local OpenAI-compatible proxy for Cursor and DeepSeek thinking models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Yixing Lao" },
+]
+keywords = ["cursor", "deepseek", "proxy", "llm", "openai-compatible", "reasoning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: Software Development",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "black==24.2.0",
+    "pre-commit>=3.0.0",
+    "ruff>=0.3.0",
+]
+
+[project.scripts]
+deepseek-cursor-proxy = "deepseek_cursor_proxy.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["deepseek_cursor_proxy*"]
+
+[tool.black]
+target-version = ["py310"]
