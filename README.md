@@ -2,13 +2,12 @@
 
 Proxy for connecting Cursor to DeepSeek thinking models.
 
-It forwards Cursor's API key to DeepSeek, repairs missing `reasoning_content` across tool-call turns, and can expose the local proxy through ngrok.
-
 ## What It Does
 
-- ✅ Restores missing `reasoning_content` after tool calls
-- ✅ Shows streamed thinking text in Cursor-compatible chats
-- ✅ Starts an ngrok tunnel so Cursor can reach the local proxy
+- ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it.
+- ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text such that thinking tokens are shown in Cursor's UI. Cursor renders this as normal chat text, not as a native collapsible Thinking block.
+- ✅ Starts an ngrok tunnel so Cursor can reach the local proxy.
+- ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
 
 ## Why This Exists
 
