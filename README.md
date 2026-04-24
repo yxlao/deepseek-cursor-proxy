@@ -11,7 +11,7 @@ Proxy for connecting Cursor to DeepSeek thinking models.
 
 ## Why This Exists
 
-This repository fixes the following Cursor + DeepSeek tool-call error:
+This repository fixes the following Cursor + DeepSeek tool-call error with thinking mode enabled:
 
 ![Error 400 - reasoning_content must be passed back](assets/error_400.png)
 
