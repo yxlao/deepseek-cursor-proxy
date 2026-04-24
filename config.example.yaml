@@ -1,6 +1,8 @@
 # This file was created automatically at ~/.deepseek-cursor-proxy/config.yaml.
 # API keys are read from Cursor's Authorization header and forwarded upstream.
 
+# `model` is the fallback when a request has no model; Cursor's requested
+# DeepSeek model name is otherwise respected.
 base_url: https://api.deepseek.com
 model: deepseek-v4-pro
 thinking: enabled
@@ -12,5 +14,9 @@ port: 9000
 ngrok: true
 verbose: false
 request_timeout: 300
+max_request_body_bytes: 20971520
+cors: false
 
 reasoning_content_path: reasoning_content.sqlite3
+reasoning_cache_max_age_seconds: 604800
+reasoning_cache_max_rows: 10000

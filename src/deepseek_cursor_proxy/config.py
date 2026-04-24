@@ -18,6 +18,8 @@ MISSING = object()
 DEFAULT_CONFIG_TEXT = """# This file was created automatically at ~/.deepseek-cursor-proxy/config.yaml.
 # API keys are read from Cursor's Authorization header and forwarded upstream.
 
+# `model` is the fallback when a request has no model; Cursor's requested
+# DeepSeek model name is otherwise respected.
 base_url: https://api.deepseek.com
 model: deepseek-v4-pro
 thinking: enabled
@@ -29,8 +31,12 @@ port: 9000
 ngrok: true
 verbose: false
 request_timeout: 300
+max_request_body_bytes: 20971520
+cors: false
 
 reasoning_content_path: reasoning_content.sqlite3
+reasoning_cache_max_age_seconds: 604800
+reasoning_cache_max_rows: 10000
 """
 
 
@@ -163,8 +169,12 @@ class ProxyConfig:
     thinking: str = "enabled"
     reasoning_effort: str = "high"
     request_timeout: float = 300.0
+    max_request_body_bytes: int = 20 * 1024 * 1024
     reasoning_content_path: Path = field(default_factory=default_reasoning_content_path)
+    reasoning_cache_max_age_seconds: int = 7 * 24 * 60 * 60
+    reasoning_cache_max_rows: int = 10000
     cursor_display_reasoning: bool = True
+    cors: bool = False
     verbose: bool = False
     ngrok: bool = False
 
@@ -260,6 +270,15 @@ class ProxyConfig:
                 ),
                 300.0,
             ),
+            max_request_body_bytes=as_int(
+                setting_value(
+                    settings,
+                    live_env,
+                    "max_request_body_bytes",
+                    "PROXY_MAX_REQUEST_BODY_BYTES",
+                ),
+                20 * 1024 * 1024,
+            ),
             reasoning_content_path=as_path(
                 setting_value(
                     settings,
@@ -270,6 +289,24 @@ class ProxyConfig:
                 default_reasoning_content_path(),
                 config_dir,
             ),
+            reasoning_cache_max_age_seconds=as_int(
+                setting_value(
+                    settings,
+                    live_env,
+                    "reasoning_cache_max_age_seconds",
+                    "REASONING_CACHE_MAX_AGE_SECONDS",
+                ),
+                7 * 24 * 60 * 60,
+            ),
+            reasoning_cache_max_rows=as_int(
+                setting_value(
+                    settings,
+                    live_env,
+                    "reasoning_cache_max_rows",
+                    "REASONING_CACHE_MAX_ROWS",
+                ),
+                10000,
+            ),
             cursor_display_reasoning=as_bool(
                 setting_value(
                     settings,
@@ -278,6 +315,15 @@ class ProxyConfig:
                     "CURSOR_DISPLAY_REASONING",
                 ),
                 True,
+            ),
+            cors=as_bool(
+                setting_value(
+                    settings,
+                    live_env,
+                    "cors",
+                    "PROXY_CORS",
+                ),
+                False,
             ),
             verbose=as_bool(
                 setting_value(

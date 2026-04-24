@@ -16,6 +16,7 @@ class StreamingChoice:
     role: str = "assistant"
     content: str = ""
     reasoning_content: str = ""
+    has_reasoning_content: bool = False
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_reason: str | None = None
 
@@ -24,7 +25,7 @@ class StreamingChoice:
             "role": self.role,
             "content": self.content,
         }
-        if self.reasoning_content:
+        if self.has_reasoning_content:
             message["reasoning_content"] = self.reasoning_content
         if self.tool_calls:
             message["tool_calls"] = self.tool_calls
@@ -34,6 +35,7 @@ class StreamingChoice:
 class StreamAccumulator:
     def __init__(self) -> None:
         self.choices: dict[int, StreamingChoice] = {}
+        self._stored_choices: set[int] = set()
 
     def ingest_chunk(self, chunk: dict[str, Any]) -> None:
         choices = chunk.get("choices")
@@ -63,14 +65,22 @@ class StreamAccumulator:
 
             reasoning_content = delta.get("reasoning_content")
             if isinstance(reasoning_content, str):
+                choice.has_reasoning_content = True
                 choice.reasoning_content += reasoning_content
 
             self._merge_tool_call_deltas(choice, delta.get("tool_calls"))
 
     def store_reasoning(self, store: ReasoningStore, scope: str) -> int:
         stored = 0
-        for choice in self.choices.values():
-            stored += store.store_assistant_message(choice.to_message(), scope)
+        for index, choice in self.choices.items():
+            stored += self._store_choice(index, choice, store, scope)
+        return stored
+
+    def store_finished_reasoning(self, store: ReasoningStore, scope: str) -> int:
+        stored = 0
+        for index, choice in self.choices.items():
+            if choice.finish_reason is not None:
+                stored += self._store_choice(index, choice, store, scope)
         return stored
 
     def messages(self) -> list[dict[str, Any]]:
@@ -114,6 +124,20 @@ class StreamAccumulator:
                 function["arguments"] = (function.get("arguments") or "") + str(
                     function_delta["arguments"]
                 )
+
+    def _store_choice(
+        self,
+        index: int,
+        choice: StreamingChoice,
+        store: ReasoningStore,
+        scope: str,
+    ) -> int:
+        if index in self._stored_choices:
+            return 0
+        stored = store.store_assistant_message(choice.to_message(), scope)
+        if stored:
+            self._stored_choices.add(index)
+        return stored
 
 
 class CursorReasoningDisplayAdapter:

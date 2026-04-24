@@ -16,6 +16,7 @@ from deepseek_cursor_proxy.reasoning_store import (
     message_signature,
 )
 from deepseek_cursor_proxy.server import DeepSeekProxyHandler, DeepSeekProxyServer
+from deepseek_cursor_proxy.transform import reasoning_cache_namespace
 
 
 TOOL_REASONING = "I need the current date before answering."
@@ -251,6 +252,85 @@ class ReasoningStreamingDeepSeekHandler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
+
+
+class ToolCallStreamingBeforeDoneDeepSeekHandler(BaseHTTPRequestHandler):
+    requests: list[dict] = []
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        self.__class__.requests.append(payload)
+
+        if payload.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            chunks = [
+                {
+                    "id": "chatcmpl-stream-tool",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant",
+                                "reasoning_content": "Streamed tool reasoning.",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_stream_tool",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "lookup",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl-stream-tool",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "deepseek-v4-pro",
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+                    ],
+                },
+            ]
+            for chunk in chunks:
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                self.wfile.flush()
+            time.sleep(1)
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
+
+        messages = payload.get("messages", [])
+        if (
+            len(messages) >= 2
+            and messages[1].get("reasoning_content") == "Streamed tool reasoning."
+        ):
+            self._send_json(200, plain_response("stream follow-up accepted"))
+            return
+        self._send_json(400, {"error": {"message": "missing streamed reasoning"}})
+
+    def _send_json(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def tool_call_response() -> dict:
@@ -511,7 +591,21 @@ class ProxyEndToEndTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 401)
         self.assertEqual(FakeDeepSeekHandler.requests, [])
 
-    def test_proxy_adds_fallback_reasoning_for_uncached_cursor_tool_history(
+    def test_proxy_rejects_oversized_request_body(self) -> None:
+        self.proxy.server.config = replace(
+            self.proxy.server.config, max_request_body_bytes=10
+        )
+
+        status, payload = post_json(
+            f"{self.proxy.url}/v1/chat/completions",
+            first_cursor_request(),
+        )
+
+        self.assertEqual(status, 413)
+        self.assertIn("too large", payload["error"]["message"])
+        self.assertEqual(FakeDeepSeekHandler.requests, [])
+
+    def test_proxy_rejects_uncached_cursor_tool_history_without_placeholder(
         self,
     ) -> None:
         status, _ = post_json(
@@ -519,9 +613,8 @@ class ProxyEndToEndTests(unittest.TestCase):
             second_cursor_request(include_reasoning=False),
         )
 
-        self.assertEqual(status, 200)
-        upstream_messages = FakeDeepSeekHandler.requests[0]["messages"]
-        self.assertIn("reasoning_content", upstream_messages[1])
+        self.assertEqual(status, 409)
+        self.assertEqual(FakeDeepSeekHandler.requests, [])
 
 
 class InterleavedConversationTests(unittest.TestCase):
@@ -737,14 +830,122 @@ class ReasoningStreamingProxyTests(unittest.TestCase):
             "content": FINAL_CONTENT,
             "reasoning_content": "Need context.",
         }
+        cache_namespace = reasoning_cache_namespace(
+            self.proxy.server.config,
+            "deepseek-v4-pro",
+            {"type": "enabled"},
+            "high",
+            "Bearer sk-cursor-test",
+        )
         self.assertEqual(
             self.store.get(
                 "scope:"
-                + conversation_scope(request_messages)
+                + conversation_scope(request_messages, cache_namespace)
                 + ":signature:"
                 + message_signature(stored_message)
             ),
             "Need context.",
+        )
+
+
+class StreamingToolRaceProxyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        ToolCallStreamingBeforeDoneDeepSeekHandler.requests = []
+        self.upstream = ServerFixture(
+            ThreadingHTTPServer(
+                ("127.0.0.1", 0), ToolCallStreamingBeforeDoneDeepSeekHandler
+            )
+        ).start()
+        self.store = ReasoningStore(":memory:")
+        proxy = DeepSeekProxyServer(("127.0.0.1", 0), DeepSeekProxyHandler)
+        proxy.config = ProxyConfig(
+            upstream_base_url=self.upstream.url,
+            upstream_model="deepseek-v4-pro",
+        )
+        proxy.reasoning_store = self.store
+        self.proxy = ServerFixture(proxy).start()
+
+    def tearDown(self) -> None:
+        self.proxy.close()
+        self.upstream.close()
+        self.store.close()
+
+    def test_streaming_tool_reasoning_is_available_before_done(self) -> None:
+        request_messages = [{"role": "user", "content": "stream tool"}]
+        request = Request(
+            f"{self.proxy.url}/v1/chat/completions",
+            data=json.dumps(
+                {
+                    "model": "deepseek-v4-pro",
+                    "stream": True,
+                    "messages": request_messages,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "parameters": {"type": "object", "properties": {}},
+                            },
+                        }
+                    ],
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": "Bearer sk-cursor-test",
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urlopen(request, timeout=3) as response:
+            while True:
+                line = response.readline().decode("utf-8")
+                self.assertNotEqual(line, "")
+                if '"finish_reason":"tool_calls"' in line:
+                    break
+
+            status, payload = post_json(
+                f"{self.proxy.url}/v1/chat/completions",
+                {
+                    "model": "deepseek-v4-pro",
+                    "messages": [
+                        *request_messages,
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_stream_tool",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": "call_stream_tool",
+                            "content": "tool result",
+                        },
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "parameters": {"type": "object", "properties": {}},
+                            },
+                        }
+                    ],
+                },
+            )
+            response.read()
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(
+            payload["choices"][0]["message"]["content"], "stream follow-up accepted"
         )
 
 

@@ -76,8 +76,11 @@ def canonical_scope_message(message: dict[str, Any]) -> dict[str, Any]:
     return canonical
 
 
-def conversation_scope(messages: list[dict[str, Any]]) -> str:
-    payload = [canonical_scope_message(message) for message in messages]
+def conversation_scope(messages: list[dict[str, Any]], namespace: str = "") -> str:
+    scope_messages = [canonical_scope_message(message) for message in messages]
+    payload: Any = scope_messages
+    if namespace:
+        payload = {"namespace": namespace, "messages": scope_messages}
     canonical = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -85,7 +88,14 @@ def conversation_scope(messages: list[dict[str, Any]]) -> str:
 
 
 class ReasoningStore:
-    def __init__(self, reasoning_content_path: str | Path) -> None:
+    def __init__(
+        self,
+        reasoning_content_path: str | Path,
+        max_age_seconds: int | None = None,
+        max_rows: int | None = None,
+    ) -> None:
+        self.max_age_seconds = max_age_seconds
+        self.max_rows = max_rows
         if str(reasoning_content_path) == ":memory:":
             self.reasoning_content_path: str | Path = ":memory:"
         else:
@@ -110,13 +120,14 @@ class ReasoningStore:
             """
         )
         self._conn.commit()
+        self.prune()
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
 
     def put(self, key: str, reasoning: str, message: dict[str, Any]) -> None:
-        if not reasoning:
+        if not isinstance(reasoning, str):
             return
         message_json = json.dumps(message, ensure_ascii=False, sort_keys=True)
         with self._lock:
@@ -131,6 +142,7 @@ class ReasoningStore:
                 """,
                 (key, reasoning, message_json, time.time()),
             )
+            self._prune_locked()
             self._conn.commit()
 
     def get(self, key: str) -> str | None:
@@ -147,7 +159,7 @@ class ReasoningStore:
         if message.get("role") != "assistant":
             return 0
         reasoning = message.get("reasoning_content")
-        if not isinstance(reasoning, str) or not reasoning:
+        if not isinstance(reasoning, str):
             return 0
 
         keys = [f"scope:{scope}:signature:{message_signature(message)}"]
@@ -166,11 +178,11 @@ class ReasoningStore:
 
     def lookup_for_message(self, message: dict[str, Any], scope: str) -> str | None:
         reasoning = self.get(f"scope:{scope}:signature:{message_signature(message)}")
-        if reasoning:
+        if reasoning is not None:
             return reasoning
         for tool_call_id in tool_call_ids(message):
             reasoning = self.get(f"scope:{scope}:tool_call:{tool_call_id}")
-            if reasoning:
+            if reasoning is not None:
                 return reasoning
         for tool_call in message.get("tool_calls") or []:
             if not isinstance(tool_call, dict):
@@ -178,6 +190,46 @@ class ReasoningStore:
             reasoning = self.get(
                 f"scope:{scope}:tool_call_signature:{tool_call_signature(tool_call)}"
             )
-            if reasoning:
+            if reasoning is not None:
                 return reasoning
         return None
+
+    def clear(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM reasoning_cache").fetchone()
+            count = int(row[0] if row else 0)
+            self._conn.execute("DELETE FROM reasoning_cache")
+            self._conn.commit()
+        return count
+
+    def prune(self) -> int:
+        with self._lock:
+            deleted = self._prune_locked()
+            self._conn.commit()
+        return deleted
+
+    def _prune_locked(self) -> int:
+        deleted = 0
+        if self.max_age_seconds is not None and self.max_age_seconds > 0:
+            cutoff = time.time() - self.max_age_seconds
+            cursor = self._conn.execute(
+                "DELETE FROM reasoning_cache WHERE created_at < ?",
+                (cutoff,),
+            )
+            deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+
+        if self.max_rows is not None and self.max_rows > 0:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM reasoning_cache
+                WHERE key NOT IN (
+                    SELECT key
+                    FROM reasoning_cache
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                )
+                """,
+                (self.max_rows,),
+            )
+            deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+        return deleted
