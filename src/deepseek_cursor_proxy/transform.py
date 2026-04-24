@@ -356,6 +356,14 @@ def prepare_upstream_request(
         prepared["max_tokens"] = payload["max_completion_tokens"]
 
     prepared["model"] = upstream_model
+    if prepared.get("stream"):
+        stream_options = prepared.get("stream_options")
+        if not isinstance(stream_options, dict):
+            stream_options = {}
+        else:
+            stream_options = dict(stream_options)
+        stream_options["include_usage"] = True
+        prepared["stream_options"] = stream_options
 
     if "tools" in prepared and isinstance(prepared["tools"], list):
         prepared["tools"] = [normalize_tool(tool) for tool in prepared["tools"]]

@@ -113,6 +113,20 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(prepared.upstream_model, "deepseek-v4-flash")
         self.assertEqual(prepared.payload["model"], "deepseek-v4-flash")
 
+    def test_streaming_requests_include_usage_for_runtime_stats(self) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "stream": True,
+                "stream_options": {"include_usage": False},
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            ProxyConfig(),
+            self.store,
+        )
+
+        self.assertEqual(prepared.payload["stream_options"]["include_usage"], True)
+
     def test_preserves_required_tool_choice(self) -> None:
         payload = {
             "model": "deepseek-v4-pro",

@@ -360,6 +360,14 @@ def tool_call_response() -> dict:
                 },
             }
         ],
+        "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 5,
+            "total_tokens": 25,
+            "prompt_cache_hit_tokens": 12,
+            "prompt_cache_miss_tokens": 8,
+            "completion_tokens_details": {"reasoning_tokens": 3},
+        },
     }
 
 
@@ -557,6 +565,14 @@ class ProxyEndToEndTests(unittest.TestCase):
         output = "\n".join(captured.output)
         self.assertEqual(status, 200)
         self.assertIn("cursor request: model='deepseek-v4-pro'", output)
+        self.assertIn(
+            "deepseek send: model=deepseek-v4-pro stream=0 rounds=1 msgs=1 tools=1 reasoning=0/0ch",
+            output,
+        )
+        self.assertIn(
+            "deepseek usage: prompt=20 completion=5 total=25 cache=12/8 hit=60.0% reasoning=3",
+            output,
+        )
         self.assertIn("request complete status=200", output)
         self.assertNotIn("What is tomorrow's date?", output)
         self.assertNotIn("sk-from-cursor", output)

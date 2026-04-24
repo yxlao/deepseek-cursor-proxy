@@ -107,6 +107,8 @@ DeepSeek's [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode#to
 
 ## Debugging
 
+Normal logs avoid request/response bodies but still print compact request and usage statistics. `rounds` is the number of user turns in the forwarded history, `reasoning` is the number and character size of `reasoning_content` fields sent to DeepSeek, and `cache=hit/miss` comes from DeepSeek's `usage.prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
+
 Run with verbose output:
 
 ```bash

@@ -178,6 +178,12 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        LOG.info(
+            "deepseek send: %s patched=%s placeholder=%s",
+            compact_request_stats(prepared.payload),
+            prepared.patched_reasoning_messages,
+            prepared.placeholder_reasoning_messages,
+        )
 
         if self.config.verbose:
             LOG.info(
@@ -386,7 +392,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             )
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             LOG.warning("failed to rewrite upstream JSON response: %s", exc)
-        log_cache_usage_from_body(body)
+        log_usage_from_body(body)
 
         if self.config.verbose:
             log_bytes("cursor response body", body)
@@ -478,7 +484,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             stored = accumulator.store_finished_reasoning(self.reasoning_store, scope)
             if stored:
                 LOG.info("stored %s streaming reasoning cache key(s)", stored)
-            log_cache_usage(chunk.get("usage"))
+            log_usage(chunk.get("usage"))
             if display_adapter is not None:
                 display_adapter.rewrite_chunk(chunk)
             if "model" in chunk:
@@ -578,23 +584,99 @@ def log_bytes(label: str, body: bytes) -> None:
     log_json(label, payload)
 
 
-def log_cache_usage_from_body(body: bytes) -> None:
+def log_usage_from_body(body: bytes) -> None:
     try:
         payload = json.loads(body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return
     if isinstance(payload, dict):
-        log_cache_usage(payload.get("usage"))
+        log_usage(payload.get("usage"))
 
 
-def log_cache_usage(usage: Any) -> None:
+def log_usage(usage: Any) -> None:
     if not isinstance(usage, dict):
         return
-    hit = usage.get("prompt_cache_hit_tokens")
-    miss = usage.get("prompt_cache_miss_tokens")
-    if hit is None and miss is None:
+    summary = compact_usage_stats(usage)
+    if summary is None:
         return
-    LOG.info("deepseek prompt cache: hit_tokens=%s miss_tokens=%s", hit, miss)
+    LOG.info("deepseek usage: %s", summary)
+
+
+def compact_request_stats(payload: dict[str, Any]) -> str:
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+    tools = payload.get("tools")
+    reasoning_count = 0
+    reasoning_chars = 0
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str):
+            reasoning_count += 1
+            reasoning_chars += len(reasoning)
+    rounds = sum(
+        1
+        for message in messages
+        if isinstance(message, dict) and message.get("role") == "user"
+    )
+    return (
+        f"model={payload.get('model')} stream={int(bool(payload.get('stream')))} "
+        f"rounds={rounds} msgs={len(messages)} "
+        f"tools={len(tools) if isinstance(tools, list) else 0} "
+        f"reasoning={reasoning_count}/{reasoning_chars}ch"
+    )
+
+
+def compact_usage_stats(usage: dict[str, Any]) -> str | None:
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+    hit_tokens = usage.get("prompt_cache_hit_tokens")
+    miss_tokens = usage.get("prompt_cache_miss_tokens")
+    details = usage.get("completion_tokens_details")
+    reasoning_tokens = None
+    if isinstance(details, dict):
+        reasoning_tokens = details.get("reasoning_tokens")
+
+    if all(
+        value is None
+        for value in (
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            hit_tokens,
+            miss_tokens,
+            reasoning_tokens,
+        )
+    ):
+        return None
+
+    cache_summary = "cache=?"
+    if hit_tokens is not None or miss_tokens is not None:
+        hit = int_or_zero(hit_tokens)
+        miss = int_or_zero(miss_tokens)
+        cache_total = hit + miss
+        if cache_total:
+            cache_summary = f"cache={hit}/{miss} hit={hit / cache_total:.1%}"
+        else:
+            cache_summary = f"cache={hit}/{miss}"
+
+    return (
+        f"prompt={prompt_tokens if prompt_tokens is not None else '?'} "
+        f"completion={completion_tokens if completion_tokens is not None else '?'} "
+        f"total={total_tokens if total_tokens is not None else '?'} "
+        f"{cache_summary} "
+        f"reasoning={reasoning_tokens if reasoning_tokens is not None else '?'}"
+    )
+
+
+def int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def sse_data(payload: dict[str, Any]) -> bytes:
