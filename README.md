@@ -34,7 +34,7 @@ Provider returned error:
 
 Cursor blocks non-public API URLs such as `localhost`, so the proxy needs a public HTTPS URL. [ngrok](https://ngrok.com/) can expose the local proxy to Cursor without opening router ports. Alternatively, you may use [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/).
 
-Create an ngrok account, then visit ngrok's Dashboard: https://dashboard.ngrok.com
+Create an ngrok account, then visit ngrok's dashboard: https://dashboard.ngrok.com
 
 ![ngrok dashboard](assets/ngrok_dashboard.png)
 
@@ -53,7 +53,7 @@ In Cursor, add the DeepSeek custom model and point it at this proxy:
 - API Key: your DeepSeek API key
 - Base URL: your ngrok HTTPS URL with the `/v1` API version path
 
-The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is only the fallback used when a request does not include a model.
+The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is used as a fallback only when a request does not include a model.
 
 For example, if ngrok dashboard shows `https://example.ngrok-free.app`, use:
 
@@ -115,6 +115,7 @@ deepseek-cursor-proxy
 On start, `deepseek-cursor-proxy` will print the ngrok public URL. If it differs from the one in Cursor, update it in Cursor's Base URL field.
 
 On the first run, `deepseek-cursor-proxy` will create:
+
 - `~/.deepseek-cursor-proxy/config.yaml`: the configuration file
 - `~/.deepseek-cursor-proxy/reasoning_content.sqlite3`: the reasoning content cache
 
