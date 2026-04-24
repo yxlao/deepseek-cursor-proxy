@@ -9,7 +9,11 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from deepseek_cursor_proxy.config import ProxyConfig
-from deepseek_cursor_proxy.reasoning_store import ReasoningStore
+from deepseek_cursor_proxy.reasoning_store import (
+    ReasoningStore,
+    conversation_scope,
+    message_signature,
+)
 from deepseek_cursor_proxy.server import DeepSeekProxyHandler, DeepSeekProxyServer
 
 
@@ -182,6 +186,68 @@ class SlowAfterDoneStreamingDeepSeekHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
         time.sleep(2)
+
+
+class ReasoningStreamingDeepSeekHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+    def do_POST(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunks = [
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "deepseek-v4-pro",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "reasoning_content": "Need "},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "deepseek-v4-pro",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": "context."},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "deepseek-v4-pro",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": FINAL_CONTENT},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "deepseek-v4-pro",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            },
+        ]
+        for chunk in chunks:
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
 
 
 def tool_call_response() -> dict:
@@ -553,6 +619,79 @@ class StreamingProxyTests(unittest.TestCase):
 
         self.assertLess(elapsed, 1)
         self.assertIn("data: [DONE]", body)
+
+
+class ReasoningStreamingProxyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.upstream = ServerFixture(
+            ThreadingHTTPServer(("127.0.0.1", 0), ReasoningStreamingDeepSeekHandler)
+        ).start()
+        self.store = ReasoningStore(":memory:")
+        proxy = DeepSeekProxyServer(("127.0.0.1", 0), DeepSeekProxyHandler)
+        proxy.config = ProxyConfig(
+            upstream_api_key="upstream-key",
+            proxy_api_key="cursor-local-token",
+            upstream_base_url=self.upstream.url,
+            upstream_model="deepseek-v4-pro",
+        )
+        proxy.reasoning_store = self.store
+        self.proxy = ServerFixture(proxy).start()
+
+    def tearDown(self) -> None:
+        self.proxy.close()
+        self.upstream.close()
+        self.store.close()
+
+    def test_streaming_proxy_mirrors_reasoning_for_cursor_display(
+        self,
+    ) -> None:
+        request_messages = [{"role": "user", "content": "stream reasoning"}]
+        request = Request(
+            f"{self.proxy.url}/v1/chat/completions",
+            data=json.dumps(
+                {
+                    "model": "deepseek-v4-pro",
+                    "stream": True,
+                    "messages": request_messages,
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": "Bearer cursor-local-token",
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urlopen(request, timeout=2) as response:
+            body = response.read().decode("utf-8")
+
+        chunks = [
+            json.loads(line.removeprefix("data: "))
+            for line in body.splitlines()
+            if line.startswith("data: {")
+        ]
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "<think>\nNeed ")
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["reasoning_content"], "Need ")
+        self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "context.")
+        self.assertEqual(
+            chunks[2]["choices"][0]["delta"]["content"],
+            "\n</think>\n\n" + FINAL_CONTENT,
+        )
+
+        stored_message = {
+            "role": "assistant",
+            "content": FINAL_CONTENT,
+            "reasoning_content": "Need context.",
+        }
+        self.assertEqual(
+            self.store.get(
+                "scope:"
+                + conversation_scope(request_messages)
+                + ":signature:"
+                + message_signature(stored_message)
+            ),
+            "Need context.",
+        )
 
 
 def first_cursor_request() -> dict:

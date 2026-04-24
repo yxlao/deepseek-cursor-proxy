@@ -6,7 +6,9 @@ A simple proxy that caches and restores DeepSeek `reasoning_content` across tool
 
 DeepSeek thinking mode returns `reasoning_content` separately from final `content`. After an assistant turn with tool calls, DeepSeek requires that same `reasoning_content` to be sent back in later requests. Cursor can omit it in custom OpenAI-compatible flows, causing `The reasoning_content in the thinking mode must be passed back to the API.` This proxy caches reasoning by conversation prefix, message signature, and tool-call IDs, then restores it before forwarding to DeepSeek.
 
-Thi repo fixes the following error:
+For streamed responses, the proxy also mirrors DeepSeek `reasoning_content` into Cursor-visible `<think>...</think>` content while leaving the original `reasoning_content` field intact. This lets Cursor display the thinking text in OpenAI-compatible BYOK/proxy flows, and the proxy strips those display-only tags from later assistant history before replaying it to DeepSeek.
+
+This repo fixes the following error:
 
 ![Error 400 - reasoning_content must be passed back](assets/error_400.png)
 
@@ -41,6 +43,7 @@ Edit `~/.deepseek-cursor-proxy/.env`:
 ```bash
 DEEPSEEK_API_KEY=sk-your-deepseek-key
 PROXY_API_KEY=cursor-local-token
+CURSOR_DISPLAY_REASONING=true
 ```
 
 Keep `PROXY_API_KEY` set when using ngrok because the proxy will be reachable from the public internet.
@@ -89,6 +92,12 @@ Run without ngrok for local curl testing:
 
 ```bash
 PROXY_NGROK=false deepseek-cursor-proxy --port 9000 --verbose
+```
+
+Disable the Cursor display mirror if you only want raw OpenAI-compatible response fields:
+
+```bash
+CURSOR_DISPLAY_REASONING=false deepseek-cursor-proxy --verbose
 ```
 
 Log full request bodies only when needed:

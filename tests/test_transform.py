@@ -9,6 +9,7 @@ from deepseek_cursor_proxy.transform import (
     extract_text_content,
     prepare_upstream_request,
     rewrite_response_body,
+    strip_cursor_thinking_blocks,
 )
 
 
@@ -30,6 +31,37 @@ class TransformTests(unittest.TestCase):
             extract_text_content(content),
             "hello\n[image_url omitted by DeepSeek text proxy]\nworld",
         )
+
+    def test_strips_cursor_display_thinking_blocks_from_assistant_content(
+        self,
+    ) -> None:
+        self.assertEqual(
+            strip_cursor_thinking_blocks(
+                "<think>\nNeed context.\n</think>\n\nFinal answer."
+            ),
+            "Final answer.",
+        )
+
+    def test_prepares_assistant_content_without_mirrored_thinking_blocks(
+        self,
+    ) -> None:
+        payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "<think>\nHidden.\n</think>\n\nVisible answer.",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        }
+
+        prepared = prepare_upstream_request(
+            payload, ProxyConfig(upstream_api_key="key"), self.store
+        )
+
+        self.assertEqual(prepared.payload["messages"][1]["content"], "Visible answer.")
 
     def test_prepares_thinking_request_and_converts_legacy_functions(self) -> None:
         payload = {
@@ -340,6 +372,51 @@ class TransformTests(unittest.TestCase):
 
         prepared = prepare_upstream_request(
             payload, ProxyConfig(upstream_api_key="key"), self.store
+        )
+
+        self.assertEqual(prepared.patched_reasoning_messages, 1)
+        self.assertEqual(prepared.payload["messages"][1]["content"], "")
+        self.assertEqual(
+            prepared.payload["messages"][1]["reasoning_content"],
+            "Need to call the file tool.",
+        )
+
+    def test_restores_reasoning_when_cursor_history_contains_mirrored_think_block(
+        self,
+    ) -> None:
+        prior = [{"role": "user", "content": "inspect repo"}]
+        tool_call = {
+            "id": "call_original",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"README.md"}',
+            },
+        }
+        self.store.store_assistant_message(
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "Need to call the file tool.",
+                "tool_calls": [tool_call],
+            },
+            conversation_scope(prior),
+        )
+
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    *prior,
+                    {
+                        "role": "assistant",
+                        "content": "<think>\nNeed to call the file tool.\n</think>\n\n",
+                        "tool_calls": [tool_call],
+                    },
+                ],
+            },
+            ProxyConfig(upstream_api_key="key"),
+            self.store,
         )
 
         self.assertEqual(prepared.patched_reasoning_messages, 1)

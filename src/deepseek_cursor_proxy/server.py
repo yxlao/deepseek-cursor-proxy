@@ -21,7 +21,7 @@ from .config import (
     default_reasoning_content_path,
 )
 from .reasoning_store import ReasoningStore, conversation_scope
-from .streaming import StreamAccumulator
+from .streaming import CursorReasoningDisplayAdapter, StreamAccumulator
 from .tunnel import NgrokTunnel, local_tunnel_target
 from .transform import prepare_upstream_request, rewrite_response_body
 
@@ -319,16 +319,20 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         self.close_connection = True
 
         accumulator = StreamAccumulator()
+        display_adapter = (
+            CursorReasoningDisplayAdapter()
+            if self.config.cursor_display_reasoning
+            else None
+        )
         scope = conversation_scope(request_messages)
         finalized = False
         while True:
             line = response.readline()
             if not line:
                 break
-            rewritten = self._rewrite_sse_line(line, original_model, accumulator, scope)
-            if rewritten is None:
-                finalized = True
-                rewritten = b"data: [DONE]\n\n"
+            rewritten, finalized = self._rewrite_sse_line(
+                line, original_model, accumulator, scope, display_adapter
+            )
             self.wfile.write(rewritten)
             self.wfile.flush()
             if finalized:
@@ -347,10 +351,11 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         original_model: str,
         accumulator: StreamAccumulator,
         scope: str,
-    ) -> bytes | None:
+        display_adapter: CursorReasoningDisplayAdapter | None,
+    ) -> tuple[bytes, bool]:
         stripped = line.strip()
         if not stripped.startswith(b"data:"):
-            return line
+            return line, False
 
         data = stripped[len(b"data:") :].strip()
         if data == b"[DONE]":
@@ -359,15 +364,22 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             stored = accumulator.store_reasoning(self.reasoning_store, scope)
             if stored:
                 LOG.info("stored %s streaming reasoning cache key(s)", stored)
-            return None
+            if display_adapter is None:
+                return b"data: [DONE]\n\n", True
+            closing_chunk = display_adapter.flush_chunk(original_model)
+            if closing_chunk is None:
+                return b"data: [DONE]\n\n", True
+            return sse_data(closing_chunk) + b"data: [DONE]\n\n", True
 
         try:
             chunk = json.loads(data.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return line
+            return line, False
 
         if isinstance(chunk, dict):
             accumulator.ingest_chunk(chunk)
+            if display_adapter is not None:
+                display_adapter.rewrite_chunk(chunk)
             if "model" in chunk:
                 chunk["model"] = original_model
             ending = b"\r\n" if line.endswith(b"\r\n") else b"\n"
@@ -377,8 +389,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     "utf-8"
                 )
                 + ending
-            )
-        return line
+            ), False
+        return line, False
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -424,6 +436,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Log normalized upstream request bodies",
     )
+    parser.add_argument(
+        "--no-cursor-display-reasoning",
+        action="store_true",
+        help="Do not mirror reasoning_content into Cursor-visible <think> content",
+    )
     return parser
 
 
@@ -446,6 +463,14 @@ def log_bytes(label: str, body: bytes) -> None:
         LOG.info("%s:\n%s", label, body.decode("utf-8", errors="replace"))
         return
     log_json(label, payload)
+
+
+def sse_data(payload: dict[str, Any]) -> bytes:
+    return (
+        b"data: "
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        + b"\n\n"
+    )
 
 
 def summarize_chat_payload(payload: dict[str, Any]) -> str:
@@ -498,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
         updates["verbose"] = True
     if args.log_bodies:
         updates["log_bodies"] = True
+    if args.no_cursor_display_reasoning:
+        updates["cursor_display_reasoning"] = False
     if updates:
         config = replace(config, **updates)
 
@@ -519,9 +546,10 @@ def main(argv: list[str] | None = None) -> int:
         config.upstream_model,
     )
     LOG.info(
-        "thinking=%s reasoning_effort=%s reasoning_content_path=%s",
+        "thinking=%s reasoning_effort=%s cursor_display_reasoning=%s reasoning_content_path=%s",
         config.thinking,
         config.reasoning_effort,
+        config.cursor_display_reasoning,
         config.reasoning_content_path,
     )
     if config.verbose:
