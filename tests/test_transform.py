@@ -57,9 +57,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.payload["messages"][1]["content"], "Visible answer.")
 
@@ -72,7 +70,7 @@ class TransformTests(unittest.TestCase):
             "max_completion_tokens": 123,
             "parallel_tool_calls": True,
         }
-        config = ProxyConfig(upstream_api_key="key")
+        config = ProxyConfig()
 
         prepared = prepare_upstream_request(payload, config, self.store)
 
@@ -97,9 +95,7 @@ class TransformTests(unittest.TestCase):
             "tool_choice": "required",
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.payload["tool_choice"], "auto")
 
@@ -147,9 +143,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.patched_reasoning_messages, 1)
         self.assertEqual(
@@ -212,9 +206,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.patched_reasoning_messages, 1)
         self.assertEqual(
@@ -261,12 +253,8 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared_a = prepare_upstream_request(
-            payload_a, ProxyConfig(upstream_api_key="key"), self.store
-        )
-        prepared_b = prepare_upstream_request(
-            payload_b, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared_a = prepare_upstream_request(payload_a, ProxyConfig(), self.store)
+        prepared_b = prepare_upstream_request(payload_b, ProxyConfig(), self.store)
 
         self.assertEqual(
             prepared_a.payload["messages"][1]["reasoning_content"],
@@ -321,7 +309,7 @@ class TransformTests(unittest.TestCase):
                     },
                 ],
             },
-            ProxyConfig(upstream_api_key="key"),
+            ProxyConfig(),
             self.store,
         )
 
@@ -370,9 +358,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.patched_reasoning_messages, 1)
         self.assertEqual(prepared.payload["messages"][1]["content"], "")
@@ -415,7 +401,7 @@ class TransformTests(unittest.TestCase):
                     },
                 ],
             },
-            ProxyConfig(upstream_api_key="key"),
+            ProxyConfig(),
             self.store,
         )
 
@@ -453,9 +439,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.patched_reasoning_messages, 0)
         self.assertEqual(prepared.fallback_reasoning_messages, 1)
@@ -493,9 +477,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.fallback_reasoning_messages, 1)
         self.assertIn("reasoning_content", prepared.payload["messages"][3])
@@ -510,9 +492,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.fallback_reasoning_messages, 0)
         self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
@@ -530,9 +510,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(upstream_api_key="key"), self.store
-        )
+        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(
             prepared.payload["messages"][0],

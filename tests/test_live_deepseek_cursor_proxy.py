@@ -13,7 +13,9 @@ from deepseek_cursor_proxy.reasoning_store import ReasoningStore
 from deepseek_cursor_proxy.server import DeepSeekProxyHandler, DeepSeekProxyServer
 
 
-LIVE_DEEPSEEK = os.getenv("RUN_LIVE_DEEPSEEK_TESTS") == "1"
+LIVE_DEEPSEEK = os.getenv("RUN_LIVE_DEEPSEEK_TESTS") == "1" and bool(
+    os.getenv("LIVE_DEEPSEEK_KEY")
+)
 
 
 def post_json(
@@ -37,12 +39,10 @@ def post_json(
 
 
 class ProxyFixture:
-    def __init__(self, api_key: str) -> None:
+    def __init__(self) -> None:
         self.store = ReasoningStore(":memory:")
         server = DeepSeekProxyServer(("127.0.0.1", 0), DeepSeekProxyHandler)
         server.config = ProxyConfig(
-            upstream_api_key=api_key,
-            proxy_api_key="cursor-local-token",
             upstream_base_url="https://api.deepseek.com",
             upstream_model="deepseek-v4-pro",
             request_timeout=180,
@@ -68,17 +68,18 @@ class ProxyFixture:
 
 
 @unittest.skipUnless(
-    LIVE_DEEPSEEK, "set RUN_LIVE_DEEPSEEK_TESTS=1 to run live DeepSeek API tests"
+    LIVE_DEEPSEEK,
+    "set RUN_LIVE_DEEPSEEK_TESTS=1 and LIVE_DEEPSEEK_KEY to run live tests",
 )
 class LiveDeepSeekProxyTests(unittest.TestCase):
     def test_proxy_repairs_real_deepseek_tool_call_history(self) -> None:
-        api_key = os.environ["DEEPSEEK_API_KEY"]
-        proxy = ProxyFixture(api_key).start()
+        api_key = os.environ["LIVE_DEEPSEEK_KEY"]
+        proxy = ProxyFixture().start()
         try:
             first_status, first_response = post_json(
                 proxy.url,
                 first_request(),
-                api_key="cursor-local-token",
+                api_key=api_key,
             )
             self.assertEqual(first_status, 200, first_response.get("error"))
             assistant_with_reasoning = first_response["choices"][0]["message"]
@@ -118,7 +119,7 @@ class LiveDeepSeekProxyTests(unittest.TestCase):
             proxy_status, second_response = post_json(
                 proxy.url,
                 missing_reasoning_payload,
-                api_key="cursor-local-token",
+                api_key=api_key,
             )
             self.assertEqual(proxy_status, 200, second_response.get("error"))
             final_assistant = second_response["choices"][0]["message"]
@@ -145,7 +146,7 @@ class LiveDeepSeekProxyTests(unittest.TestCase):
                 followup_status, followup_response = post_json(
                     proxy.url,
                     followup_payload,
-                    api_key="cursor-local-token",
+                    api_key=api_key,
                 )
                 self.assertEqual(followup_status, 200, followup_response.get("error"))
         finally:

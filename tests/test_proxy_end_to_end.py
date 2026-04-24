@@ -23,7 +23,7 @@ FINAL_CONTENT = "Final answer after using the tool."
 
 
 def post_json(
-    url: str, payload: dict, api_key: str = "cursor-local-token"
+    url: str, payload: dict, api_key: str = "sk-cursor-test"
 ) -> tuple[int, dict]:
     body = json.dumps(payload).encode("utf-8")
     request = Request(
@@ -45,6 +45,7 @@ def post_json(
 
 class FakeDeepSeekHandler(BaseHTTPRequestHandler):
     requests: list[dict] = []
+    auth_headers: list[str] = []
 
     def log_message(self, fmt: str, *args: object) -> None:
         return
@@ -53,6 +54,7 @@ class FakeDeepSeekHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         payload = json.loads(self.rfile.read(length).decode("utf-8"))
         self.__class__.requests.append(payload)
+        self.__class__.auth_headers.append(self.headers.get("Authorization", ""))
 
         for index, message in enumerate(payload.get("messages", [])):
             if not isinstance(message, dict) or message.get("role") != "assistant":
@@ -383,14 +385,13 @@ class ServerFixture:
 class ProxyEndToEndTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeDeepSeekHandler.requests = []
+        FakeDeepSeekHandler.auth_headers = []
         self.upstream = ServerFixture(
             ThreadingHTTPServer(("127.0.0.1", 0), FakeDeepSeekHandler)
         ).start()
         self.store = ReasoningStore(":memory:")
         proxy = DeepSeekProxyServer(("127.0.0.1", 0), DeepSeekProxyHandler)
         proxy.config = ProxyConfig(
-            upstream_api_key="upstream-key",
-            proxy_api_key="cursor-local-token",
             upstream_base_url=self.upstream.url,
             upstream_model="deepseek-v4-pro",
         )
@@ -451,6 +452,30 @@ class ProxyEndToEndTests(unittest.TestCase):
             third_upstream_messages[3]["reasoning_content"], FINAL_REASONING
         )
 
+    def test_proxy_forwards_cursor_bearer_token_to_deepseek(self) -> None:
+        status, _ = post_json(
+            f"{self.proxy.url}/v1/chat/completions",
+            first_cursor_request(),
+            api_key="sk-from-cursor",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(FakeDeepSeekHandler.auth_headers[0], "Bearer sk-from-cursor")
+
+    def test_proxy_rejects_missing_cursor_bearer_token(self) -> None:
+        request = Request(
+            f"{self.proxy.url}/v1/chat/completions",
+            data=json.dumps(first_cursor_request()).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(request, timeout=5)
+
+        self.assertEqual(caught.exception.code, 401)
+        self.assertEqual(FakeDeepSeekHandler.requests, [])
+
     def test_proxy_adds_fallback_reasoning_for_uncached_cursor_tool_history(
         self,
     ) -> None:
@@ -473,8 +498,6 @@ class InterleavedConversationTests(unittest.TestCase):
         self.store = ReasoningStore(":memory:")
         proxy = DeepSeekProxyServer(("127.0.0.1", 0), DeepSeekProxyHandler)
         proxy.config = ProxyConfig(
-            upstream_api_key="upstream-key",
-            proxy_api_key="cursor-local-token",
             upstream_base_url=self.upstream.url,
             upstream_model="deepseek-v4-pro",
         )
@@ -580,8 +603,6 @@ class StreamingProxyTests(unittest.TestCase):
         self.store = ReasoningStore(":memory:")
         proxy = DeepSeekProxyServer(("127.0.0.1", 0), DeepSeekProxyHandler)
         proxy.config = ProxyConfig(
-            upstream_api_key="upstream-key",
-            proxy_api_key="cursor-local-token",
             upstream_base_url=self.upstream.url,
             upstream_model="deepseek-v4-pro",
         )
@@ -607,7 +628,7 @@ class StreamingProxyTests(unittest.TestCase):
             ).encode("utf-8"),
             method="POST",
             headers={
-                "Authorization": "Bearer cursor-local-token",
+                "Authorization": "Bearer sk-cursor-test",
                 "Content-Type": "application/json",
             },
         )
@@ -629,8 +650,6 @@ class ReasoningStreamingProxyTests(unittest.TestCase):
         self.store = ReasoningStore(":memory:")
         proxy = DeepSeekProxyServer(("127.0.0.1", 0), DeepSeekProxyHandler)
         proxy.config = ProxyConfig(
-            upstream_api_key="upstream-key",
-            proxy_api_key="cursor-local-token",
             upstream_base_url=self.upstream.url,
             upstream_model="deepseek-v4-pro",
         )
@@ -657,7 +676,7 @@ class ReasoningStreamingProxyTests(unittest.TestCase):
             ).encode("utf-8"),
             method="POST",
             headers={
-                "Authorization": "Bearer cursor-local-token",
+                "Authorization": "Bearer sk-cursor-test",
                 "Content-Type": "application/json",
             },
         )

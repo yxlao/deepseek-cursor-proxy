@@ -42,17 +42,16 @@ cp .env.example ~/.deepseek-cursor-proxy/.env
 chmod 600 ~/.deepseek-cursor-proxy/.env
 ```
 
-`.env.example` is only a safe template. The proxy loads `~/.deepseek-cursor-proxy/.env` automatically, and that file should stay outside this repository because it contains your keys.
+`.env.example` is only a safe template. The proxy loads `~/.deepseek-cursor-proxy/.env` automatically for local settings.
 
 Edit `~/.deepseek-cursor-proxy/.env`:
 
 ```bash
-DEEPSEEK_API_KEY=sk-your-deepseek-key
-PROXY_API_KEY=cursor-local-token
+DEEPSEEK_MODEL=deepseek-v4-pro
 CURSOR_DISPLAY_REASONING=true
 ```
 
-Keep `PROXY_API_KEY` set when using ngrok because the proxy will be reachable from the public internet.
+The proxy does not read API keys from this config file. Cursor sends your DeepSeek key in the OpenAI-compatible `Authorization` header, and the proxy forwards that same bearer token to DeepSeek.
 
 By default, reasoning cache data is stored at:
 
@@ -89,7 +88,7 @@ Use that URL in Cursor. If you do not use ngrok and point Cursor at `localhost` 
 ## 5. Cursor Settings
 
 - OpenAI Base URL: the printed ngrok URL ending in `/v1`
-- OpenAI API Key: the value of `PROXY_API_KEY`
+- OpenAI API Key: your DeepSeek API key
 - Model: `deepseek-v4-pro`
 
 ## Useful Commands

@@ -121,8 +121,6 @@ class ProxyConfig:
     host: str = "127.0.0.1"
     port: int = 9000
     upstream_base_url: str = "https://api.deepseek.com"
-    upstream_api_key: str = ""
-    proxy_api_key: str | None = None
     upstream_model: str = "deepseek-v4-pro"
     allow_model_passthrough: bool = False
     thinking: str = "enabled"
@@ -154,8 +152,6 @@ class ProxyConfig:
             upstream_base_url=values.get(
                 "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
             ).rstrip("/"),
-            upstream_api_key=values.get("DEEPSEEK_API_KEY", ""),
-            proxy_api_key=values.get("PROXY_API_KEY") or None,
             upstream_model=values.get("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             allow_model_passthrough=env_bool(
                 values, "DEEPSEEK_ALLOW_MODEL_PASSTHROUGH", False
@@ -178,7 +174,3 @@ class ProxyConfig:
                 ("deepseek-v4-pro", "deepseek-v4-flash"),
             ),
         )
-
-    def validate(self) -> None:
-        if not self.upstream_api_key:
-            raise ValueError("DEEPSEEK_API_KEY is required")

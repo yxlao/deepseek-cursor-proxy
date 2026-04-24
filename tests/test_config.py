@@ -37,8 +37,6 @@ class ConfigTests(unittest.TestCase):
             env_file_path.write_text(
                 "\n".join(
                     [
-                        "DEEPSEEK_API_KEY=file-key",
-                        "PROXY_API_KEY=cursor-token",
                         "PROXY_PORT=9100",
                         f"REASONING_CONTENT_PATH={reasoning_content_path}",
                     ]
@@ -48,8 +46,6 @@ class ConfigTests(unittest.TestCase):
 
             config = ProxyConfig.from_env(env={}, env_file_path=env_file_path)
 
-        self.assertEqual(config.upstream_api_key, "file-key")
-        self.assertEqual(config.proxy_api_key, "cursor-token")
         self.assertEqual(config.port, 9100)
         self.assertEqual(config.reasoning_content_path, reasoning_content_path)
 
@@ -59,7 +55,6 @@ class ConfigTests(unittest.TestCase):
             env_file_path.write_text(
                 "\n".join(
                     [
-                        "DEEPSEEK_API_KEY=file-key",
                         "PROXY_VERBOSE=false",
                     ]
                 ),
@@ -68,13 +63,11 @@ class ConfigTests(unittest.TestCase):
 
             config = ProxyConfig.from_env(
                 env={
-                    "DEEPSEEK_API_KEY": "env-key",
                     "PROXY_VERBOSE": "true",
                 },
                 env_file_path=env_file_path,
             )
 
-        self.assertEqual(config.upstream_api_key, "env-key")
         self.assertTrue(config.verbose)
 
     def test_relative_reasoning_content_path_stays_inside_app_directory(self) -> None:
@@ -83,7 +76,6 @@ class ConfigTests(unittest.TestCase):
         with patch("deepseek_cursor_proxy.config.Path.home", return_value=home):
             config = ProxyConfig.from_env(
                 env={
-                    "DEEPSEEK_API_KEY": "key",
                     "REASONING_CONTENT_PATH": "custom.sqlite3",
                 },
                 env_file_path=Path("/does/not/exist"),
@@ -97,7 +89,6 @@ class ConfigTests(unittest.TestCase):
     def test_verbose_and_body_logging_can_be_enabled_from_env(self) -> None:
         config = ProxyConfig.from_env(
             env={
-                "DEEPSEEK_API_KEY": "key",
                 "PROXY_VERBOSE": "true",
                 "PROXY_LOG_BODIES": "1",
                 "PROXY_NGROK": "yes",
@@ -112,7 +103,6 @@ class ConfigTests(unittest.TestCase):
     def test_cursor_reasoning_display_can_be_disabled_from_env(self) -> None:
         config = ProxyConfig.from_env(
             env={
-                "DEEPSEEK_API_KEY": "key",
                 "CURSOR_DISPLAY_REASONING": "false",
             },
             env_file_path=Path("/does/not/exist"),
@@ -124,15 +114,15 @@ class ConfigTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             first_env_path = Path(temp_dir) / "first.env"
             second_env_path = Path(temp_dir) / "second.env"
-            first_env_path.write_text("DEEPSEEK_API_KEY=first-key", encoding="utf-8")
-            second_env_path.write_text("DEEPSEEK_API_KEY=second-key", encoding="utf-8")
+            first_env_path.write_text("PROXY_PORT=9100", encoding="utf-8")
+            second_env_path.write_text("PROXY_PORT=9200", encoding="utf-8")
 
             config = ProxyConfig.from_env(
                 env={"DEEPSEEK_CURSOR_PROXY_CONFIG_PATH": str(second_env_path)},
                 env_file_path=None,
             )
 
-        self.assertEqual(config.upstream_api_key, "second-key")
+        self.assertEqual(config.port, 9200)
 
     def test_explicit_env_file_path_wins_over_config_path_environment_variable(
         self,
@@ -140,26 +130,26 @@ class ConfigTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             first_env_path = Path(temp_dir) / "first.env"
             second_env_path = Path(temp_dir) / "second.env"
-            first_env_path.write_text("DEEPSEEK_API_KEY=first-key", encoding="utf-8")
-            second_env_path.write_text("DEEPSEEK_API_KEY=second-key", encoding="utf-8")
+            first_env_path.write_text("PROXY_PORT=9100", encoding="utf-8")
+            second_env_path.write_text("PROXY_PORT=9200", encoding="utf-8")
 
             config = ProxyConfig.from_env(
                 env={"DEEPSEEK_CURSOR_PROXY_CONFIG_PATH": str(second_env_path)},
                 env_file_path=first_env_path,
             )
 
-        self.assertEqual(config.upstream_api_key, "first-key")
+        self.assertEqual(config.port, 9100)
 
     def test_from_env_does_not_mutate_process_environment(self) -> None:
         with patch.dict(
             "os.environ",
             {
-                "DEEPSEEK_API_KEY": "env-key",
+                "PROXY_VERBOSE": "true",
             },
             clear=True,
         ):
             ProxyConfig.from_env(env_file_path=Path("/does/not/exist"))
-            self.assertEqual(dict(os.environ), {"DEEPSEEK_API_KEY": "env-key"})
+            self.assertEqual(dict(os.environ), {"PROXY_VERBOSE": "true"})
 
 
 if __name__ == "__main__":

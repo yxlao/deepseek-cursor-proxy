@@ -88,16 +88,11 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 404, {"error": {"message": "Only /v1/chat/completions is supported"}}
             )
             return
-        if not self._authorized():
+        cursor_authorization = self._cursor_authorization()
+        if cursor_authorization is None:
             self._send_json(
-                401, {"error": {"message": "Missing or invalid proxy API key"}}
+                401, {"error": {"message": "Missing Authorization bearer token"}}
             )
-            return
-
-        try:
-            self.config.validate()
-        except ValueError as exc:
-            self._send_json(500, {"error": {"message": str(exc)}})
             return
 
         try:
@@ -148,7 +143,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             upstream_url,
             data=upstream_body,
             method="POST",
-            headers=self._upstream_headers(stream=bool(prepared.payload.get("stream"))),
+            headers=self._upstream_headers(
+                stream=bool(prepared.payload.get("stream")),
+                authorization=cursor_authorization,
+            ),
         )
 
         try:
@@ -193,12 +191,12 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     response, prepared.original_model, prepared.payload["messages"]
                 )
 
-    def _authorized(self) -> bool:
-        expected = self.config.proxy_api_key
-        if expected is None:
-            return True
+    def _cursor_authorization(self) -> str | None:
         auth_header = self.headers.get("Authorization", "")
-        return auth_header == f"Bearer {expected}"
+        scheme, separator, token = auth_header.strip().partition(" ")
+        if separator != " " or scheme.lower() != "bearer" or not token.strip():
+            return None
+        return f"Bearer {token.strip()}"
 
     def _send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -252,9 +250,9 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             raise ValueError("Request body must be a JSON object")
         return payload
 
-    def _upstream_headers(self, stream: bool) -> dict[str, str]:
+    def _upstream_headers(self, stream: bool, authorization: str) -> dict[str, str]:
         headers = {
-            "Authorization": f"Bearer {self.config.upstream_api_key}",
+            "Authorization": authorization,
             "Content-Type": "application/json",
             "Accept": "text/event-stream" if stream else "application/json",
             "Accept-Encoding": "identity",
@@ -528,12 +526,6 @@ def main(argv: list[str] | None = None) -> int:
     if updates:
         config = replace(config, **updates)
 
-    try:
-        config.validate()
-    except ValueError as exc:
-        LOG.error("%s", exc)
-        return 2
-
     store = ReasoningStore(config.reasoning_content_path)
     server = DeepSeekProxyServer((config.host, config.port), DeepSeekProxyHandler)
     server.config = config
@@ -572,8 +564,6 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         LOG.info("ngrok tunnel forwarding %s -> %s", public_url, target_url)
         LOG.info("Cursor Base URL: %s/v1", public_url.rstrip("/"))
-        if config.proxy_api_key:
-            LOG.info("Cursor API key: value of PROXY_API_KEY")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
