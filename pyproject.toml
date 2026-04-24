@@ -25,7 +25,9 @@ classifiers = [
     "Topic :: Internet :: Proxy Servers",
     "Topic :: Software Development",
 ]
-dependencies = []
+dependencies = [
+    "PyYAML>=6.0",
+]
 
 [project.optional-dependencies]
 dev = [

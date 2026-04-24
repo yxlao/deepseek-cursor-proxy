@@ -1,31 +1,25 @@
 # deepseek-cursor-proxy
 
-A simple proxy that caches and restores DeepSeek `reasoning_content` across tool-call turns in Cursor, making thinking models like `deepseek-v4-pro` and `deepseek-v4-flash` work correctly.
+Proxy for connecting Cursor to DeepSeek thinking models.
+
+It forwards Cursor's API key to DeepSeek, repairs missing `reasoning_content` across tool-call turns, and can expose the local proxy through ngrok.
 
 ## What It Does
 
-- Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it.
-- Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text so thinking tokens are shown in Cursor BYOK/proxy chats. Cursor currently renders this as normal chat text, not as a native collapsible Thinking block.
-- Provides other compatibility fixes for running Cursor with the DeepSeek official API.
+- ✅ Forwards Cursor's DeepSeek API key directly upstream
+- ✅ Restores missing `reasoning_content` after tool calls
+- ✅ Shows streamed thinking text in Cursor-compatible chats
+- ✅ Starts an ngrok tunnel so Cursor can reach the local proxy
 
-## Why This Exists
-
-DeepSeek thinking mode returns `reasoning_content` separately from final `content`. After an assistant turn with tool calls, DeepSeek requires that same `reasoning_content` to be sent back in later requests. Cursor can omit it in custom OpenAI-compatible flows, causing `The reasoning_content in the thinking mode must be passed back to the API.` This proxy caches reasoning by conversation prefix, message signature, and tool-call IDs, then restores it before forwarding to DeepSeek.
-
-For streamed responses, the proxy also mirrors DeepSeek `reasoning_content` into Cursor-visible `<think>...</think>` content while leaving the original `reasoning_content` field intact. This lets Cursor display the thinking text in OpenAI-compatible BYOK/proxy flows, and the proxy strips those display-only tags from later assistant history before replaying it to DeepSeek.
-
-This repo fixes the following error:
+## Fixes This Error
 
 ![Error 400 - reasoning_content must be passed back](assets/error_400.png)
 
 ```txt
-⚠️ Connection Error
-
-Provider returned error: {"error":{"message":"The reasoning_content in the thinking mode must be passed back to the
-API.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}
+Provider returned error: {"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}
 ```
 
-## 1. Install
+## Install
 
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh
@@ -33,62 +27,43 @@ conda activate pytools
 PIP_REQUIRE_VIRTUALENV=false python -m pip install -e .
 ```
 
-## 2. Configure
+## Configure
 
-```bash
-mkdir -p ~/.deepseek-cursor-proxy
-chmod 700 ~/.deepseek-cursor-proxy
-cp .env.example ~/.deepseek-cursor-proxy/.env
-chmod 600 ~/.deepseek-cursor-proxy/.env
-```
+The proxy creates `~/.deepseek-cursor-proxy/config.yaml` on first run.
 
-`.env.example` is only a safe template. The proxy loads `~/.deepseek-cursor-proxy/.env` automatically for local settings.
+Edit it later if needed. API keys do not go in this file; enter your DeepSeek key in Cursor, and the proxy forwards it upstream.
 
-Edit `~/.deepseek-cursor-proxy/.env`:
+## Set Up Ngrok
 
-```bash
-DEEPSEEK_MODEL=deepseek-v4-pro
-CURSOR_DISPLAY_REASONING=true
-```
-
-The proxy does not read API keys from this config file. Cursor sends your DeepSeek key in the OpenAI-compatible `Authorization` header, and the proxy forwards that same bearer token to DeepSeek.
-
-By default, reasoning cache data is stored at:
-
-```text
-~/.deepseek-cursor-proxy/reasoning_content.sqlite3
-```
-
-Override it with `REASONING_CONTENT_PATH` or `deepseek-cursor-proxy --reasoning-content-path <path>` only when you need a custom location.
-
-## 3. Set Up Ngrok Once
-
-- Create/login to an ngrok account: https://dashboard.ngrok.com/signup
-- Copy your authtoken from the dashboard: https://dashboard.ngrok.com/get-started/your-authtoken
+Create an ngrok account, then install and authenticate ngrok once:
 
 ```bash
 brew install ngrok
 ngrok config add-authtoken <your-ngrok-token>
 ```
 
-## 4. Run
+Useful ngrok links:
+
+- Sign up: https://dashboard.ngrok.com/signup
+- Authtoken: https://dashboard.ngrok.com/get-started/your-authtoken
+- Dashboard: https://dashboard.ngrok.com
+
+## Run
 
 ```bash
 deepseek-cursor-proxy --verbose
 ```
 
-The proxy prints a line like:
+Copy the printed URL:
 
 ```text
 Cursor Base URL: https://example.ngrok-free.app/v1
 ```
 
-Use that URL in Cursor. If you do not use ngrok and point Cursor at `localhost` or `127.0.0.1`, Cursor may fail with `ssrf_blocked: connection to private IP is blocked`.
+## Cursor Settings
 
-## 5. Cursor Settings
-
-- OpenAI Base URL: the printed ngrok URL ending in `/v1`
-- OpenAI API Key: your DeepSeek API key
+- Base URL: the printed URL ending in `/v1`
+- API Key: your DeepSeek API key
 - Model: `deepseek-v4-pro`
 
 ## Useful Commands
@@ -99,24 +74,10 @@ Run without ngrok for local curl testing:
 PROXY_NGROK=false deepseek-cursor-proxy --port 9000 --verbose
 ```
 
-Disable the Cursor display mirror if you only want raw OpenAI-compatible response fields:
+Use another config file:
 
 ```bash
-CURSOR_DISPLAY_REASONING=false deepseek-cursor-proxy --verbose
-```
-
-Log full request bodies only when needed:
-
-```bash
-deepseek-cursor-proxy --ngrok --verbose --log-bodies
-```
-
-This prints the Cursor request body, the normalized DeepSeek request body, DeepSeek error bodies, and the final streamed assistant message.
-
-Use a different env file for development:
-
-```bash
-deepseek-cursor-proxy --config ./dev.env
+deepseek-cursor-proxy --config ./dev.config.yaml
 ```
 
 Run tests:
@@ -124,24 +85,3 @@ Run tests:
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests
 ```
-
-## Development
-
-Pre-commit runs whitespace checks, Black, and Ruff:
-
-```bash
-PIP_REQUIRE_VIRTUALENV=false python -m pip install -e ".[dev]"
-pre-commit install
-pre-commit run --all-files
-```
-
-## Notes
-
-- Distribution name: `deepseek-cursor-proxy`
-- Import package: `deepseek_cursor_proxy`
-- User config file: `~/.deepseek-cursor-proxy/.env`
-- Cache file: `~/.deepseek-cursor-proxy/reasoning_content.sqlite3`
-- DeepSeek thinking docs: https://api-docs.deepseek.com/guides/thinking_mode
-- DeepSeek chat completion docs: https://api-docs.deepseek.com/api/create-chat-completion
-- Cursor forum report: https://forum.cursor.com/t/compatibility-with-deepseek-models-design-to-return-reasoning-content-after-tool-calls/158905
-- ngrok setup docs: https://ngrok.com/downloads

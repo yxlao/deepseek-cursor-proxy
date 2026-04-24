@@ -1,0 +1,17 @@
+# This file was created automatically at ~/.deepseek-cursor-proxy/config.yaml.
+# API keys are read from Cursor's Authorization header and forwarded upstream.
+
+base_url: https://api.deepseek.com
+model: deepseek-v4-pro
+thinking: enabled
+reasoning_effort: high
+display_reasoning: true
+
+host: 127.0.0.1
+port: 9000
+ngrok: true
+verbose: false
+log_bodies: false
+request_timeout: 300
+
+reasoning_content_path: reasoning_content.sqlite3

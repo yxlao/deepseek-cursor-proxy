@@ -221,20 +221,14 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
     def _send_models(self) -> None:
         created = int(time.time())
-        seen: set[str] = set()
-        models = []
-        for model_id in (self.config.upstream_model, *self.config.model_list):
-            if model_id in seen:
-                continue
-            seen.add(model_id)
-            models.append(
-                {
-                    "id": model_id,
-                    "object": "model",
-                    "created": created,
-                    "owned_by": "deepseek",
-                }
-            )
+        models = [
+            {
+                "id": self.config.upstream_model,
+                "object": "model",
+                "created": created,
+                "owned_by": "deepseek",
+            }
+        ]
         self._send_json(200, {"object": "list", "data": models})
 
     def _read_json_body(self) -> dict[str, Any]:
@@ -397,19 +391,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--config",
         dest="config_path",
         type=Path,
-        help=f"Env config file, default {default_config_path()}",
+        help=f"YAML config file, default {default_config_path()}",
     )
     parser.add_argument(
-        "--host", help="Bind host, default from PROXY_HOST or 127.0.0.1"
+        "--host", help="Bind host, default from config, PROXY_HOST, or 127.0.0.1"
     )
     parser.add_argument(
-        "--port", type=int, help="Bind port, default from PROXY_PORT or 9000"
+        "--port",
+        type=int,
+        help="Bind port, default from config, PROXY_PORT, or 9000",
     )
     parser.add_argument(
-        "--model", help="Upstream DeepSeek model, default from DEEPSEEK_MODEL"
+        "--model",
+        help="Upstream DeepSeek model, default from config, DEEPSEEK_MODEL, or deepseek-v4-pro",
     )
     parser.add_argument(
-        "--base-url", help="DeepSeek base URL, default https://api.deepseek.com"
+        "--base-url",
+        help="DeepSeek base URL, default from config, DEEPSEEK_BASE_URL, or https://api.deepseek.com",
     )
     parser.add_argument(
         "--reasoning-content-path",
@@ -503,7 +501,11 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     args = build_arg_parser().parse_args(argv)
-    config = ProxyConfig.from_env(env_file_path=args.config_path)
+    try:
+        config = ProxyConfig.from_file(config_path=args.config_path)
+    except ValueError as exc:
+        LOG.error("%s", exc)
+        return 2
     updates: dict[str, Any] = {}
     if args.host:
         updates["host"] = args.host
