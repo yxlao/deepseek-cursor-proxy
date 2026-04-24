@@ -30,7 +30,7 @@ Provider returned error:
 
 ## Usage
 
-### Step 1: Set Up Ngrok
+### Step 1: Set Up ngrok
 
 Create an ngrok account, visit ngrok's Dashboard: https://dashboard.ngrok.com
 
