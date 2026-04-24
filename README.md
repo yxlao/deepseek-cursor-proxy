@@ -6,7 +6,6 @@ It forwards Cursor's API key to DeepSeek, repairs missing `reasoning_content` ac
 
 ## What It Does
 
-- ✅ Forwards Cursor's DeepSeek API key directly upstream
 - ✅ Restores missing `reasoning_content` after tool calls
 - ✅ Shows streamed thinking text in Cursor-compatible chats
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy
