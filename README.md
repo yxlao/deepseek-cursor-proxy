@@ -5,7 +5,7 @@ Proxy for connecting Cursor to DeepSeek thinking models.
 ## What It Does
 
 - ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it.
-- ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text such that thinking tokens are shown in Cursor's UI. Cursor renders this as normal chat text, not as a native collapsible Thinking block.
+- ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text such that thinking tokens are shown in Cursor's UI. For BYOK/proxy mode, Cursor renders this as normal chat text, not as a native collapsible Thinking block.
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy.
 - ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
 
@@ -27,52 +27,61 @@ Provider returned error:
 }
 ```
 
-## Install
+## Usage
 
-```bash
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate pytools
-PIP_REQUIRE_VIRTUALENV=false python -m pip install -e .
-```
+### Step 1: Set Up Ngrok
 
-## Configure
+Create an ngrok account, visit ngrok's Dashboard: https://dashboard.ngrok.com
 
-The proxy creates `~/.deepseek-cursor-proxy/config.yaml` on first run.
+![ngrok dashboard showing the public URL](assets/ngrok_dashboard.png)
 
-Edit it later if needed. API keys do not go in this file; enter your DeepSeek key in Cursor, and the proxy forwards it upstream.
-
-## Set Up Ngrok
-
-Create an ngrok account, then install and authenticate ngrok once:
+Then, install and authenticate ngrok once:
 
 ```bash
 brew install ngrok
 ngrok config add-authtoken <your-ngrok-token>
 ```
 
-Useful ngrok links:
+### Step 2: Add Cursor Custom Model
 
-- Sign up: https://dashboard.ngrok.com/signup
-- Authtoken: https://dashboard.ngrok.com/get-started/your-authtoken
-- Dashboard: https://dashboard.ngrok.com
+In Cursor, add the DeepSeek custom model and point it at this proxy:
 
-## Run
+- Model: `deepseek-v4-pro`
+- API Key: your DeepSeek API key
+- Base URL: your ngrok HTTPS URL with the `/v1` API version path
+
+For example, if ngrok dashboard shows `https://example.ngrok-free.app`, use:
+
+```text
+https://example.ngrok-free.app/v1
+```
+
+![Cursor settings for DeepSeek through the proxy](assets/cursor_config.png)
+
+Note you can toggle the custom API on and off with:
+- macOS: `Cmd+Shift+0`
+- Windows/Linux: `Ctrl+Shift+0`
+
+### Step 3: Start the Proxy Server
+
+Install and run the proxy:
 
 ```bash
+conda create -n dcp python=3.10 -y
+conda activate dcp
+pip install -e .
 deepseek-cursor-proxy --verbose
 ```
 
-Copy the printed URL:
+The proxy creates `~/.deepseek-cursor-proxy/config.yaml` on first run.
 
-```text
-Cursor Base URL: https://example.ngrok-free.app/v1
-```
+This will also print the ngrok public URL. If it differs from the one in Cursor, update it in Cursor's Base URL field.
 
-## Cursor Settings
+### Step 4: Chat with DeepSeek in Cursor
 
-- Base URL: the printed URL ending in `/v1`
-- API Key: your DeepSeek API key
-- Model: `deepseek-v4-pro`
+Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.\
+
+![Chatting with DeepSeek in Cursor](assets/cursor_chat.png)
 
 ## Useful Commands
 
