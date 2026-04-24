@@ -69,14 +69,16 @@ Note: you can toggle the custom API on and off with:
 Install and run the proxy:
 
 ```bash
-# Or, use your favourite Python package manager
+# Or, use your favourite Python env manager
 conda create -n dcp python=3.10 -y
 conda activate dcp
 
 # Install
+git clone https://github.com/yxlao/deepseek-cursor-proxy.git
+cd deepseek-cursor-proxy
 pip install -e .
 
-# Run in normal mode
+# Run
 deepseek-cursor-proxy
 ```
 
