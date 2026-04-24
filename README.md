@@ -16,6 +16,7 @@ This repository fixes the following Cursor + DeepSeek tool-call error with think
 ![Error 400 - reasoning_content must be passed back](assets/error_400.png)
 
 ```txt
+⚠️ Connection Error
 Provider returned error:
 {
   "error": {
@@ -59,6 +60,7 @@ https://example.ngrok-free.app/v1
 ![Cursor settings for DeepSeek through the proxy](assets/cursor_config.png)
 
 Note you can toggle the custom API on and off with:
+
 - macOS: `Cmd+Shift+0`
 - Windows/Linux: `Ctrl+Shift+0`
 
