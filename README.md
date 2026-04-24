@@ -8,6 +8,17 @@ It fixes Cursor dropping DeepSeek `reasoning_content` after tool calls by cachin
 
 DeepSeek thinking mode returns `reasoning_content` separately from final `content`. After an assistant turn with tool calls, DeepSeek requires that same `reasoning_content` to be sent back in later requests. Cursor can omit it in custom OpenAI-compatible flows, causing `The reasoning_content in the thinking mode must be passed back to the API.` This proxy caches reasoning by conversation prefix, message signature, and tool-call IDs, then restores it before forwarding to DeepSeek.
 
+Thi repo fixes the following error:
+
+![Error 400 - reasoning_content must be passed back](assets/error_400.png)
+
+```txt
+⚠️ Connection Error
+
+Provider returned error: {"error":{"message":"The reasoning_content in the thinking mode must be passed back to the
+API.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}
+```
+
 ## 1. Install
 
 ```bash
