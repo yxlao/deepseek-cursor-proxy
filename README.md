@@ -81,11 +81,11 @@ This will also print the ngrok public URL. If it differs from the one in Cursor,
 
 ### Step 4: Chat with DeepSeek in Cursor
 
-Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.\
+Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.
 
 ![Chatting with DeepSeek in Cursor](assets/cursor_chat.png)
 
-## Useful Commands
+## Debugging and Development
 
 Run without ngrok for local curl testing:
 
