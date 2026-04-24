@@ -2,6 +2,12 @@
 
 A simple proxy that caches and restores DeepSeek `reasoning_content` across tool-call turns in Cursor, making thinking models like `deepseek-v4-pro` and `deepseek-v4-flash` work correctly.
 
+## What It Does
+
+- Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it.
+- Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text so thinking tokens are shown in Cursor BYOK/proxy chats. Cursor currently renders this as normal chat text, not as a native collapsible Thinking block.
+- Provides other compatibility fixes for running Cursor with the DeepSeek official API.
+
 ## Why This Exists
 
 DeepSeek thinking mode returns `reasoning_content` separately from final `content`. After an assistant turn with tool calls, DeepSeek requires that same `reasoning_content` to be sent back in later requests. Cursor can omit it in custom OpenAI-compatible flows, causing `The reasoning_content in the thinking mode must be passed back to the API.` This proxy caches reasoning by conversation prefix, message signature, and tool-call IDs, then restores it before forwarding to DeepSeek.
