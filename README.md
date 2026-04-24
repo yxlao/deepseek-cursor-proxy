@@ -11,12 +11,22 @@ It forwards Cursor's API key to DeepSeek, repairs missing `reasoning_content` ac
 - ✅ Shows streamed thinking text in Cursor-compatible chats
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy
 
-## Fixes This Error
+## Why This Exists
+
+This repository fixes the following Cursor + DeepSeek tool-call error:
 
 ![Error 400 - reasoning_content must be passed back](assets/error_400.png)
 
 ```txt
-Provider returned error: {"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}
+Provider returned error:
+{
+  "error": {
+    "message": "The reasoning_content in the thinking mode must be passed back to the API.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_request_error"
+  }
+}
 ```
 
 ## Install
