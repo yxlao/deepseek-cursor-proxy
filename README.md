@@ -73,11 +73,30 @@ Note: you can toggle the custom API on and off with:
 Install and run the proxy:
 
 ```bash
-# Or, use your favourite Python env manager
+# Install uv if you don't have it.
+# https://docs.astral.sh/uv/getting-started/installation/
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone the repository
+git clone https://github.com/yxlao/deepseek-cursor-proxy.git
+cd deepseek-cursor-proxy
+
+# Install deepseek-cursor-proxy (editable) and dependencies
+# This creates .venv/ automatically
+uv sync
+source .venv/bin/activate
+
+# Run
+deepseek-cursor-proxy
+```
+
+<details>
+<summary>Alternative: conda</summary>
+
+```bash
 conda create -n dcp python=3.10 -y
 conda activate dcp
 
-# Install
 git clone https://github.com/yxlao/deepseek-cursor-proxy.git
 cd deepseek-cursor-proxy
 pip install -e .
@@ -85,6 +104,8 @@ pip install -e .
 # Run
 deepseek-cursor-proxy
 ```
+
+</details>
 
 The proxy creates `~/.deepseek-cursor-proxy/config.yaml` on first run.
 
