@@ -1,6 +1,6 @@
 # deepseek-cursor-proxy
 
-Proxy for connecting Cursor to DeepSeek thinking models.
+Compatibility proxy connecting Cursor to DeepSeek thinking models (`deepseek-v4-pro` and `deepseek-v4-flash`).
 
 ## What It Does
 
