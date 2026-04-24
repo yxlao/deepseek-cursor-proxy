@@ -1,4 +1,4 @@
-<h1><img src="assets/logo.png" width="60" alt="deepseek-cursor-proxy logo" style="vertical-align: middle;"> deepseek-cursor-proxy</h1>
+<h1><img src="assets/logo.png" width="90" alt="deepseek-cursor-proxy logo" style="vertical-align: middle;"> deepseek-cursor-proxy</h1>
 
 Compatibility proxy connecting Cursor to DeepSeek thinking models (`deepseek-v4-pro` and `deepseek-v4-flash`).
 
