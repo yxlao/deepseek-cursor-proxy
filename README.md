@@ -6,7 +6,7 @@ Compatibility proxy connecting Cursor to DeepSeek thinking models (`deepseek-v4-
 
 - ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
 - ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text so that thinking tokens are shown in Cursor's UI. For BYOK/proxy mode, Cursor renders this as normal text, not as a native collapsible thinking block.
-- ✅ Starts an ngrok tunnel so Cursor can reach the local proxy.
+- ✅ Starts an ngrok tunnel so Cursor can reach the local proxy through a public HTTPS URL.
 - ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
 
 ## Why This Exists
@@ -32,9 +32,11 @@ Provider returned error:
 
 ### Step 1: Set Up ngrok
 
-Create an ngrok account, visit ngrok's Dashboard: https://dashboard.ngrok.com
+Cursor blocks non-public API URLs such as `localhost`, so the proxy needs a public HTTPS URL. [ngrok](https://ngrok.com/) can expose the local proxy to Cursor without opening router ports. Alternatively, you may use [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/).
 
-![ngrok dashboard showing the public URL](assets/ngrok_dashboard.png)
+Create an ngrok account, then visit ngrok's Dashboard: https://dashboard.ngrok.com
+
+![ngrok dashboard](assets/ngrok_dashboard.png)
 
 Then, install and authenticate ngrok once:
 
@@ -86,23 +88,19 @@ The proxy creates `~/.deepseek-cursor-proxy/config.yaml` on first run.
 
 This will also print the ngrok public URL. If it differs from the one in Cursor, update it in Cursor's Base URL field.
 
-Normal mode prints startup info, the ngrok URL, and safe request summaries. It does not print prompts, code, API keys, or request bodies.
-
-For more request lifecycle metadata, use verbose mode:
-
-```bash
-deepseek-cursor-proxy --verbose
-```
-
-Verbose mode adds client/path/upstream metadata and full payload logs. It may print prompts and code to the terminal, so keep it off for normal use.
-
 ### Step 4: Chat with DeepSeek in Cursor
 
 Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.
 
 ![Chatting with DeepSeek in Cursor](assets/cursor_chat.png)
 
-## Debugging and Development
+## Debugging
+
+Run with verbose output:
+
+```bash
+deepseek-cursor-proxy --verbose
+```
 
 Run without ngrok for local curl testing:
 
