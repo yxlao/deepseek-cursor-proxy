@@ -1,8 +1,6 @@
 # deepseek-cursor-proxy
 
-Local OpenAI-compatible proxy for using DeepSeek thinking models in Cursor.
-
-It fixes Cursor dropping DeepSeek `reasoning_content` after tool calls by caching that field locally and restoring it on later requests.
+Local proxy that fixes DeepSeek thinking models in Cursor by caching `reasoning_content` that Cursor drops after tool calls.
 
 ## Why This Exists
 
