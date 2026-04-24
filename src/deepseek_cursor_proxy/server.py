@@ -29,10 +29,6 @@ from .transform import prepare_upstream_request, rewrite_response_body
 LOG = logging.getLogger("deepseek_cursor_proxy")
 
 
-class RequestBodyTooLarge(ValueError):
-    pass
-
-
 class DeepSeekProxyServer(ThreadingHTTPServer):
     config: ProxyConfig
     reasoning_store: ReasoningStore
@@ -106,12 +102,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
         try:
             payload = self._read_json_body()
-        except RequestBodyTooLarge as exc:
-            LOG.warning(
-                "rejected request path=%s status=413 reason=%s", request_path, exc
-            )
-            self._send_json(413, {"error": {"message": str(exc)}})
-            return
         except ValueError as exc:
             LOG.warning(
                 "rejected request path=%s status=400 reason=%s", request_path, exc
@@ -124,49 +114,28 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
         LOG.info("cursor request: %s", summarize_chat_payload(payload))
 
-        prepared = prepare_upstream_request(
-            payload,
-            self.config,
-            self.reasoning_store,
-            authorization=cursor_authorization,
-        )
+        prepared = prepare_upstream_request(payload, self.config, self.reasoning_store)
         if prepared.patched_reasoning_messages:
             LOG.info(
                 "restored reasoning_content on %s assistant message(s)",
                 prepared.patched_reasoning_messages,
             )
-        if prepared.missing_reasoning_messages:
+        if prepared.fallback_reasoning_messages:
             LOG.warning(
-                "rejected request path=%s status=409 reason=missing_reasoning_content count=%s",
-                request_path,
-                prepared.missing_reasoning_messages,
+                "added compatibility reasoning_content placeholder on %s uncached assistant message(s)",
+                prepared.fallback_reasoning_messages,
             )
-            self._send_json(
-                409,
-                {
-                    "error": {
-                        "message": (
-                            "Missing cached DeepSeek reasoning_content for a "
-                            "thinking-mode tool-call history. Retry the tool-call "
-                            "turn so the proxy can capture the original reasoning."
-                        ),
-                        "type": "missing_reasoning_content",
-                        "code": "missing_reasoning_content",
-                    }
-                },
-            )
-            return
 
         if self.config.verbose:
             LOG.info(
                 (
                     "upstream request metadata: original_model=%s upstream_model=%s "
-                    "patched_reasoning=%s missing_reasoning=%s %s"
+                    "patched_reasoning=%s fallback_reasoning=%s %s"
                 ),
                 prepared.original_model,
                 prepared.upstream_model,
                 prepared.patched_reasoning_messages,
-                prepared.missing_reasoning_messages,
+                prepared.fallback_reasoning_messages,
                 summarize_chat_payload(prepared.payload),
             )
 
@@ -222,28 +191,22 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 )
             if prepared.payload.get("stream"):
                 self._proxy_streaming_response(
-                    response,
-                    prepared.original_model,
-                    prepared.payload["messages"],
-                    prepared.cache_namespace,
+                    response, prepared.original_model, prepared.payload["messages"]
                 )
             else:
                 self._proxy_regular_response(
-                    response,
-                    prepared.original_model,
-                    prepared.payload["messages"],
-                    prepared.cache_namespace,
+                    response, prepared.original_model, prepared.payload["messages"]
                 )
             LOG.info(
                 (
                     "request complete status=%s stream=%s elapsed_ms=%s "
-                    "patched_reasoning=%s missing_reasoning=%s"
+                    "patched_reasoning=%s fallback_reasoning=%s"
                 ),
                 upstream_status,
                 bool(prepared.payload.get("stream")),
                 elapsed_ms(started),
                 prepared.patched_reasoning_messages,
-                prepared.missing_reasoning_messages,
+                prepared.fallback_reasoning_messages,
             )
 
     def _cursor_authorization(self) -> str | None:
@@ -254,8 +217,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         return f"Bearer {token.strip()}"
 
     def _send_cors_headers(self) -> None:
-        if not self.config.cors:
-            return
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header(
@@ -278,37 +239,18 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
     def _send_models(self) -> None:
         created = int(time.time())
-        model_ids = list(
-            dict.fromkeys(
-                [
-                    self.config.upstream_model,
-                    "deepseek-v4-pro",
-                    "deepseek-v4-flash",
-                ]
-            )
-        )
         models = [
             {
-                "id": model_id,
+                "id": self.config.upstream_model,
                 "object": "model",
                 "created": created,
                 "owned_by": "deepseek",
             }
-            for model_id in model_ids
         ]
         self._send_json(200, {"object": "list", "data": models})
 
     def _read_json_body(self) -> dict[str, Any]:
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError as exc:
-            raise ValueError("Invalid Content-Length") from exc
-        if length < 0:
-            raise ValueError("Invalid Content-Length")
-        if length > self.config.max_request_body_bytes:
-            raise RequestBodyTooLarge(
-                f"Request body is too large; limit is {self.config.max_request_body_bytes} bytes"
-            )
+        length = int(self.headers.get("Content-Length") or 0)
         raw_body = self.rfile.read(length)
         if not raw_body:
             raise ValueError("Request body is empty")
@@ -351,20 +293,14 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         response: Any,
         original_model: str,
         request_messages: list[dict[str, Any]],
-        cache_namespace: str,
     ) -> None:
         body = read_response_body(response)
         try:
             body = rewrite_response_body(
-                body,
-                original_model,
-                self.reasoning_store,
-                request_messages,
-                cache_namespace,
+                body, original_model, self.reasoning_store, request_messages
             )
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             LOG.warning("failed to rewrite upstream JSON response: %s", exc)
-        log_cache_usage_from_body(body)
 
         if self.config.verbose:
             log_bytes("cursor response body", body)
@@ -383,7 +319,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         response: Any,
         original_model: str,
         request_messages: list[dict[str, Any]],
-        cache_namespace: str,
     ) -> None:
         self.send_response(getattr(response, "status", 200))
         self._send_cors_headers()
@@ -399,7 +334,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             if self.config.cursor_display_reasoning
             else None
         )
-        scope = conversation_scope(request_messages, cache_namespace)
+        scope = conversation_scope(request_messages)
         finalized = False
         while True:
             line = response.readline()
@@ -453,10 +388,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
         if isinstance(chunk, dict):
             accumulator.ingest_chunk(chunk)
-            stored = accumulator.store_finished_reasoning(self.reasoning_store, scope)
-            if stored:
-                LOG.info("stored %s streaming reasoning cache key(s)", stored)
-            log_cache_usage(chunk.get("usage"))
             if display_adapter is not None:
                 display_adapter.rewrite_chunk(chunk)
             if "model" in chunk:
@@ -490,7 +421,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        help="Fallback DeepSeek model when the request has no model, default from config, DEEPSEEK_MODEL, or deepseek-v4-pro",
+        help="Upstream DeepSeek model, default from config, DEEPSEEK_MODEL, or deepseek-v4-pro",
     )
     parser.add_argument(
         "--base-url",
@@ -519,11 +450,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not mirror reasoning_content into Cursor-visible <think> content",
     )
-    parser.add_argument(
-        "--clear-reasoning-cache",
-        action="store_true",
-        help="Clear the local reasoning_content SQLite cache and exit",
-    )
     return parser
 
 
@@ -546,25 +472,6 @@ def log_bytes(label: str, body: bytes) -> None:
         LOG.info("%s:\n%s", label, body.decode("utf-8", errors="replace"))
         return
     log_json(label, payload)
-
-
-def log_cache_usage_from_body(body: bytes) -> None:
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return
-    if isinstance(payload, dict):
-        log_cache_usage(payload.get("usage"))
-
-
-def log_cache_usage(usage: Any) -> None:
-    if not isinstance(usage, dict):
-        return
-    hit = usage.get("prompt_cache_hit_tokens")
-    miss = usage.get("prompt_cache_miss_tokens")
-    if hit is None and miss is None:
-        return
-    LOG.info("deepseek prompt cache: hit_tokens=%s miss_tokens=%s", hit, miss)
 
 
 def sse_data(payload: dict[str, Any]) -> bytes:
@@ -602,16 +509,6 @@ def read_response_body(response: Any) -> bytes:
     return body
 
 
-def warn_if_insecure_upstream(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme != "http":
-        return
-    host = parsed.hostname or ""
-    if host in {"127.0.0.1", "localhost", "::1"}:
-        return
-    LOG.warning("upstream base_url uses plain HTTP; bearer tokens may be exposed")
-
-
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
@@ -642,24 +539,14 @@ def main(argv: list[str] | None = None) -> int:
     if updates:
         config = replace(config, **updates)
 
-    warn_if_insecure_upstream(config.upstream_base_url)
-    store = ReasoningStore(
-        config.reasoning_content_path,
-        max_age_seconds=config.reasoning_cache_max_age_seconds,
-        max_rows=config.reasoning_cache_max_rows,
-    )
-    if args.clear_reasoning_cache:
-        deleted = store.clear()
-        LOG.info("cleared %s reasoning cache row(s)", deleted)
-        store.close()
-        return 0
+    store = ReasoningStore(config.reasoning_content_path)
     server = DeepSeekProxyServer((config.host, config.port), DeepSeekProxyHandler)
     server.config = config
     server.reasoning_store = store
 
     LOG.info("listening on http://%s:%s/v1", config.host, config.port)
     LOG.info(
-        "forwarding to %s/chat/completions default_model=%s",
+        "forwarding to %s/chat/completions as %s",
         config.upstream_base_url,
         config.upstream_model,
     )

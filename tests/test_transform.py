@@ -8,23 +8,9 @@ from deepseek_cursor_proxy.reasoning_store import ReasoningStore, conversation_s
 from deepseek_cursor_proxy.transform import (
     extract_text_content,
     prepare_upstream_request,
-    reasoning_cache_namespace,
     rewrite_response_body,
     strip_cursor_thinking_blocks,
 )
-
-
-DEFAULT_CONFIG = ProxyConfig()
-DEFAULT_CACHE_NAMESPACE = reasoning_cache_namespace(
-    DEFAULT_CONFIG,
-    "deepseek-v4-pro",
-    {"type": "enabled"},
-    "high",
-)
-
-
-def cache_scope(messages: list[dict]) -> str:
-    return conversation_scope(messages, DEFAULT_CACHE_NAMESPACE)
 
 
 class TransformTests(unittest.TestCase):
@@ -89,30 +75,19 @@ class TransformTests(unittest.TestCase):
         prepared = prepare_upstream_request(payload, config, self.store)
 
         self.assertEqual(prepared.original_model, "deepseek-v4-flash")
-        self.assertEqual(prepared.upstream_model, "deepseek-v4-flash")
-        self.assertEqual(prepared.payload["model"], "deepseek-v4-flash")
+        self.assertEqual(prepared.upstream_model, "deepseek-v4-pro")
+        self.assertEqual(prepared.payload["model"], "deepseek-v4-pro")
         self.assertEqual(prepared.payload["thinking"], {"type": "enabled"})
         self.assertEqual(prepared.payload["reasoning_effort"], "high")
         self.assertEqual(prepared.payload["max_tokens"], 123)
         self.assertEqual(prepared.payload["tools"][0]["type"], "function")
         self.assertEqual(
             prepared.payload["tool_choice"],
-            {"type": "function", "function": {"name": "lookup"}},
+            "auto",
         )
         self.assertNotIn("parallel_tool_calls", prepared.payload)
 
-    def test_uses_config_model_only_when_request_model_is_missing(self) -> None:
-        prepared = prepare_upstream_request(
-            {"messages": [{"role": "user", "content": "hi"}]},
-            ProxyConfig(upstream_model="deepseek-v4-flash"),
-            self.store,
-        )
-
-        self.assertEqual(prepared.original_model, "deepseek-v4-flash")
-        self.assertEqual(prepared.upstream_model, "deepseek-v4-flash")
-        self.assertEqual(prepared.payload["model"], "deepseek-v4-flash")
-
-    def test_preserves_required_tool_choice(self) -> None:
+    def test_normalizes_unsupported_required_tool_choice_to_auto(self) -> None:
         payload = {
             "model": "deepseek-v4-pro",
             "messages": [{"role": "user", "content": "call a tool"}],
@@ -122,25 +97,7 @@ class TransformTests(unittest.TestCase):
 
         prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
-        self.assertEqual(prepared.payload["tool_choice"], "required")
-
-    def test_preserves_named_tool_choice(self) -> None:
-        payload = {
-            "model": "deepseek-v4-pro",
-            "messages": [{"role": "user", "content": "call lookup"}],
-            "tools": [{"type": "function", "function": {"name": "lookup"}}],
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": "lookup"},
-            },
-        }
-
-        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
-
-        self.assertEqual(
-            prepared.payload["tool_choice"],
-            {"type": "function", "function": {"name": "lookup"}},
-        )
+        self.assertEqual(prepared.payload["tool_choice"], "auto")
 
     def test_restores_reasoning_content_for_cached_tool_call(self) -> None:
         prior_messages = [{"role": "user", "content": "read README"}]
@@ -160,7 +117,7 @@ class TransformTests(unittest.TestCase):
             ],
         }
         self.store.store_assistant_message(
-            assistant_message, cache_scope(prior_messages)
+            assistant_message, conversation_scope(prior_messages)
         )
 
         payload = {
@@ -194,81 +151,6 @@ class TransformTests(unittest.TestCase):
             "Need the file contents before answering.",
         )
 
-    def test_accepts_empty_reasoning_content_when_present_for_tool_call(
-        self,
-    ) -> None:
-        payload = {
-            "model": "deepseek-v4-pro",
-            "messages": [
-                {"role": "user", "content": "read README"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning_content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_empty",
-                            "type": "function",
-                            "function": {
-                                "name": "read_file",
-                                "arguments": '{"path":"README.md"}',
-                            },
-                        }
-                    ],
-                },
-                {"role": "tool", "tool_call_id": "call_empty", "content": "file text"},
-            ],
-        }
-
-        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
-
-        self.assertEqual(prepared.patched_reasoning_messages, 0)
-        self.assertEqual(prepared.missing_reasoning_messages, 0)
-        self.assertIn("reasoning_content", prepared.payload["messages"][1])
-        self.assertEqual(prepared.payload["messages"][1]["reasoning_content"], "")
-
-    def test_restores_empty_reasoning_content_from_cache(self) -> None:
-        prior_messages = [{"role": "user", "content": "read README"}]
-        tool_call = {
-            "id": "call_empty",
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "arguments": '{"path":"README.md"}',
-            },
-        }
-        self.store.store_assistant_message(
-            {
-                "role": "assistant",
-                "content": "",
-                "reasoning_content": "",
-                "tool_calls": [tool_call],
-            },
-            cache_scope(prior_messages),
-        )
-
-        prepared = prepare_upstream_request(
-            {
-                "model": "deepseek-v4-pro",
-                "messages": [
-                    *prior_messages,
-                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
-                    {
-                        "role": "tool",
-                        "tool_call_id": "call_empty",
-                        "content": "file text",
-                    },
-                ],
-            },
-            ProxyConfig(),
-            self.store,
-        )
-
-        self.assertEqual(prepared.patched_reasoning_messages, 1)
-        self.assertEqual(prepared.missing_reasoning_messages, 0)
-        self.assertIn("reasoning_content", prepared.payload["messages"][1])
-        self.assertEqual(prepared.payload["messages"][1]["reasoning_content"], "")
-
     def test_restores_reasoning_content_for_cached_final_tool_turn_message(
         self,
     ) -> None:
@@ -297,7 +179,7 @@ class TransformTests(unittest.TestCase):
             "reasoning_content": "The tool result is enough to answer.",
         }
         self.store.store_assistant_message(
-            assistant_message, cache_scope(prior_messages)
+            assistant_message, conversation_scope(prior_messages)
         )
 
         payload = {
@@ -353,8 +235,8 @@ class TransformTests(unittest.TestCase):
         prior_a = [{"role": "user", "content": "thread A"}]
         prior_b = [{"role": "user", "content": "thread B"}]
 
-        self.store.store_assistant_message(assistant_a, cache_scope(prior_a))
-        self.store.store_assistant_message(assistant_b, cache_scope(prior_b))
+        self.store.store_assistant_message(assistant_a, conversation_scope(prior_a))
+        self.store.store_assistant_message(assistant_b, conversation_scope(prior_b))
 
         payload_a = {
             "model": "deepseek-v4-pro",
@@ -385,7 +267,7 @@ class TransformTests(unittest.TestCase):
 
     def test_exact_message_signature_wins_over_tool_call_id_fallback(self) -> None:
         prior = [{"role": "user", "content": "same conversation prefix"}]
-        scope = cache_scope(prior)
+        scope = conversation_scope(prior)
         first_tool_call = {
             "id": "call_reused",
             "type": "function",
@@ -454,7 +336,7 @@ class TransformTests(unittest.TestCase):
                 }
             ],
         }
-        self.store.store_assistant_message(assistant_message, cache_scope(prior))
+        self.store.store_assistant_message(assistant_message, conversation_scope(prior))
 
         payload = {
             "model": "deepseek-v4-pro",
@@ -504,7 +386,7 @@ class TransformTests(unittest.TestCase):
                 "reasoning_content": "Need to call the file tool.",
                 "tool_calls": [tool_call],
             },
-            cache_scope(prior),
+            conversation_scope(prior),
         )
 
         prepared = prepare_upstream_request(
@@ -530,7 +412,7 @@ class TransformTests(unittest.TestCase):
             "Need to call the file tool.",
         )
 
-    def test_reports_missing_reasoning_for_uncached_assistant_tool_call(self) -> None:
+    def test_adds_fallback_reasoning_for_uncached_assistant_tool_call(self) -> None:
         payload = {
             "model": "deepseek-v4-pro",
             "messages": [
@@ -560,10 +442,10 @@ class TransformTests(unittest.TestCase):
         prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
         self.assertEqual(prepared.patched_reasoning_messages, 0)
-        self.assertEqual(prepared.missing_reasoning_messages, 1)
-        self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
+        self.assertEqual(prepared.fallback_reasoning_messages, 1)
+        self.assertIn("reasoning_content", prepared.payload["messages"][1])
 
-    def test_reports_missing_reasoning_for_uncached_assistant_after_tool_result(
+    def test_adds_fallback_reasoning_for_uncached_assistant_after_tool_result(
         self,
     ) -> None:
         payload = {
@@ -597,10 +479,10 @@ class TransformTests(unittest.TestCase):
 
         prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
-        self.assertEqual(prepared.missing_reasoning_messages, 1)
-        self.assertNotIn("reasoning_content", prepared.payload["messages"][3])
+        self.assertEqual(prepared.fallback_reasoning_messages, 1)
+        self.assertIn("reasoning_content", prepared.payload["messages"][3])
 
-    def test_does_not_report_missing_reasoning_for_plain_chat_history(self) -> None:
+    def test_does_not_add_fallback_reasoning_for_plain_chat_history(self) -> None:
         payload = {
             "model": "deepseek-v4-pro",
             "messages": [
@@ -612,86 +494,7 @@ class TransformTests(unittest.TestCase):
 
         prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
 
-        self.assertEqual(prepared.missing_reasoning_messages, 0)
-        self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
-
-    def test_does_not_repair_reasoning_when_thinking_is_disabled(self) -> None:
-        payload = {
-            "model": "deepseek-v4-pro",
-            "messages": [
-                {"role": "user", "content": "read README"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning_content": "Should be removed in non-thinking mode.",
-                    "tool_calls": [
-                        {
-                            "id": "call_uncached",
-                            "type": "function",
-                            "function": {
-                                "name": "read_file",
-                                "arguments": '{"path":"README.md"}',
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_uncached",
-                    "content": "file text",
-                },
-            ],
-        }
-
-        prepared = prepare_upstream_request(
-            payload, ProxyConfig(thinking="disabled"), self.store
-        )
-
-        self.assertEqual(prepared.missing_reasoning_messages, 0)
-        self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
-
-    def test_reasoning_cache_is_namespaced_by_authorization(self) -> None:
-        config = ProxyConfig()
-        prior = [{"role": "user", "content": "read README"}]
-        namespace_a = reasoning_cache_namespace(
-            config,
-            config.upstream_model,
-            {"type": "enabled"},
-            "high",
-            "Bearer key-a",
-        )
-        tool_call = {
-            "id": "call_123",
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "arguments": '{"path":"README.md"}',
-            },
-        }
-        self.store.store_assistant_message(
-            {
-                "role": "assistant",
-                "content": "",
-                "reasoning_content": "Reasoning for key A.",
-                "tool_calls": [tool_call],
-            },
-            conversation_scope(prior, namespace_a),
-        )
-
-        prepared = prepare_upstream_request(
-            {
-                "model": "deepseek-v4-pro",
-                "messages": [
-                    *prior,
-                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
-                ],
-            },
-            config,
-            self.store,
-            authorization="Bearer key-b",
-        )
-
-        self.assertEqual(prepared.missing_reasoning_messages, 1)
+        self.assertEqual(prepared.fallback_reasoning_messages, 0)
         self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
 
     def test_converted_function_message_uses_tool_schema(self) -> None:
@@ -757,35 +560,6 @@ class TransformTests(unittest.TestCase):
             ),
             "I need to inspect the repo.",
         )
-
-    def test_rewrite_response_preserves_prompt_cache_usage_fields(self) -> None:
-        body = json.dumps(
-            {
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "model": "deepseek-v4-pro",
-                "choices": [
-                    {
-                        "index": 0,
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "ok"},
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "prompt_cache_hit_tokens": 6,
-                    "prompt_cache_miss_tokens": 4,
-                    "completion_tokens": 1,
-                    "total_tokens": 11,
-                },
-            }
-        ).encode()
-
-        rewritten = rewrite_response_body(body, "deepseek-v4-flash", self.store, [])
-        payload = json.loads(rewritten)
-
-        self.assertEqual(payload["usage"]["prompt_cache_hit_tokens"], 6)
-        self.assertEqual(payload["usage"]["prompt_cache_miss_tokens"], 4)
 
 
 if __name__ == "__main__":

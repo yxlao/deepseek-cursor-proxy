@@ -140,20 +140,12 @@ class ConfigTests(unittest.TestCase):
             env={
                 "PROXY_VERBOSE": "true",
                 "PROXY_NGROK": "yes",
-                "PROXY_CORS": "true",
-                "PROXY_MAX_REQUEST_BODY_BYTES": "1234",
-                "REASONING_CACHE_MAX_AGE_SECONDS": "60",
-                "REASONING_CACHE_MAX_ROWS": "50",
             },
             config_path=Path("/does/not/exist"),
         )
 
         self.assertTrue(config.verbose)
         self.assertTrue(config.ngrok)
-        self.assertTrue(config.cors)
-        self.assertEqual(config.max_request_body_bytes, 1234)
-        self.assertEqual(config.reasoning_cache_max_age_seconds, 60)
-        self.assertEqual(config.reasoning_cache_max_rows, 50)
 
     def test_cursor_reasoning_display_can_be_disabled_from_config(self) -> None:
         with TemporaryDirectory() as temp_dir:

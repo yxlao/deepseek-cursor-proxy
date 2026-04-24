@@ -4,7 +4,7 @@ Compatibility proxy connecting Cursor to DeepSeek thinking models (`deepseek-v4-
 
 ## What It Does
 
-- ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it. If the exact original reasoning is unavailable, the proxy fails closed instead of sending a fake placeholder. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
+- ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
 - ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text so that thinking tokens are shown in Cursor's UI. For BYOK/proxy mode, Cursor renders this as normal text, not as a native collapsible thinking block.
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy through a public HTTPS URL.
 - ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
@@ -53,8 +53,6 @@ In Cursor, add the DeepSeek custom model and point it at this proxy:
 - API Key: your DeepSeek API key
 - Base URL: your ngrok HTTPS URL with the `/v1` API version path
 
-The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is only the fallback used when a request does not include a model.
-
 For example, if ngrok dashboard shows `https://example.ngrok-free.app`, use:
 
 ```text
@@ -96,15 +94,6 @@ Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.
 
 ![Chatting with DeepSeek in Cursor](assets/cursor_chat.png)
 
-## How It Works
-
-DeepSeek's [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) requires `reasoning_content` from assistant messages in tool-call sequences to be passed back in later requests. Cursor may omit this field, causing DeepSeek to return a 400 error. This proxy sits between Cursor and DeepSeek (`Cursor → ngrok → proxy → DeepSeek API`) and repairs requests when it has the exact original reasoning cached.
-
-- Core fix: every DeepSeek response, streaming or non-streaming, has its `reasoning_content` stored in a local SQLite cache keyed by message signature, tool-call ID, and tool-call function signature. On outgoing thinking-mode requests, the proxy restores missing `reasoning_content` for tool-call-related assistant messages and sends the complete history to DeepSeek. If the cache is cold, such as after a proxy restart, it returns a local error instead of fabricating reasoning.
-- Multi-conversation isolation: cache keys are scoped by a SHA-256 hash of the canonical conversation prefix (roles, content, tool calls, excluding `reasoning_content`) plus the upstream model/configuration and an API-key hash. Concurrent or interleaved threads with different histories get different scopes, so reused tool-call IDs do not collide. Byte-identical cloned histories are indistinguishable unless Cursor sends a differentiating history.
-- DeepSeek [prefix caching](https://api-docs.deepseek.com/guides/kv_cache) compatibility: the proxy does not inject synthetic thread IDs, timestamps, or cache-control messages into the prompt. When it restores cached reasoning, it restores the exact original string, preserving repeated prefixes for DeepSeek's automatic best-effort context cache.
-- Additional compatibility fixes: the proxy converts legacy `functions`/`function_call` fields to `tools`/`tool_choice`, preserves required and named tool-choice semantics, normalizes `reasoning_effort` aliases per DeepSeek docs, strips mirrored `<think>` blocks from assistant content, converts multi-part content arrays to plain text, logs DeepSeek prompt-cache usage when available, and mirrors `reasoning_content` into Cursor-visible `<think>...</think>` blocks for thinking display.
-
 ## Debugging
 
 Run with verbose output:
@@ -123,12 +112,6 @@ Use another config file:
 
 ```bash
 deepseek-cursor-proxy --config ./dev.config.yaml
-```
-
-Clear the local reasoning cache:
-
-```bash
-deepseek-cursor-proxy --clear-reasoning-cache
 ```
 
 Run tests:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 import re
 from typing import Any
@@ -73,9 +72,8 @@ class PreparedRequest:
     payload: dict[str, Any]
     original_model: str
     upstream_model: str
-    cache_namespace: str
     patched_reasoning_messages: int
-    missing_reasoning_messages: int
+    fallback_reasoning_messages: int
 
 
 def normalize_reasoning_effort(value: Any) -> str:
@@ -160,30 +158,26 @@ def legacy_function_to_tool(function: Any) -> dict[str, Any]:
 
 def convert_function_call(function_call: Any) -> Any:
     if isinstance(function_call, str):
-        if function_call in {"auto", "none", "required"}:
+        if function_call in {"auto", "none"}:
             return function_call
+        if function_call == "required":
+            return "auto"
         return None
     if isinstance(function_call, dict) and function_call.get("name"):
-        return {
-            "type": "function",
-            "function": {"name": str(function_call["name"])},
-        }
+        return "auto"
     return None
 
 
 def normalize_tool_choice(tool_choice: Any) -> Any:
     if isinstance(tool_choice, str):
-        if tool_choice in {"auto", "none", "required"}:
+        if tool_choice in {"auto", "none"}:
             return tool_choice
+        if tool_choice == "required":
+            return "auto"
         return None
     if isinstance(tool_choice, dict):
         if tool_choice.get("type") == "function":
-            function = tool_choice.get("function")
-            if isinstance(function, dict) and function.get("name"):
-                return {
-                    "type": "function",
-                    "function": {"name": str(function["name"])},
-                }
+            return "auto"
         return tool_choice
     return tool_choice
 
@@ -192,9 +186,6 @@ def normalize_message(
     message: Any,
     store: ReasoningStore | None,
     prior_messages: list[dict[str, Any]],
-    cache_namespace: str,
-    repair_reasoning: bool,
-    keep_reasoning: bool,
 ) -> tuple[dict[str, Any], bool, bool]:
     if not isinstance(message, dict):
         message = {"role": "user", "content": str(message)}
@@ -219,62 +210,49 @@ def normalize_message(
         ]
 
     patched = False
-    missing = False
+    fallback = False
     if normalized["role"] == "assistant":
-        if not keep_reasoning:
+        reasoning = normalized.get("reasoning_content")
+        if not isinstance(reasoning, str) or not reasoning:
             normalized.pop("reasoning_content", None)
-        elif repair_reasoning:
-            reasoning = normalized.get("reasoning_content")
-            if not isinstance(reasoning, str):
-                normalized.pop("reasoning_content", None)
-                needs_reasoning = assistant_needs_reasoning_for_tool_context(
-                    normalized, prior_messages
+            if store is not None:
+                restored = store.lookup_for_message(
+                    normalized, conversation_scope(prior_messages)
                 )
-                if needs_reasoning and store is not None:
-                    restored = store.lookup_for_message(
-                        normalized,
-                        conversation_scope(prior_messages, cache_namespace),
-                    )
-                    if restored is not None:
-                        normalized["reasoning_content"] = restored
-                        patched = True
-                if needs_reasoning and not patched:
-                    missing = True
+                if restored:
+                    normalized["reasoning_content"] = restored
+                    patched = True
+            if not patched and assistant_needs_reasoning_for_tool_context(
+                normalized, prior_messages
+            ):
+                normalized["reasoning_content"] = fallback_reasoning_content(normalized)
+                fallback = True
 
     allowed_fields = ROLE_MESSAGE_FIELDS.get(str(normalized["role"]), MESSAGE_FIELDS)
     normalized = {
         key: value for key, value in normalized.items() if key in allowed_fields
     }
-    return normalized, patched, missing
+    return normalized, patched, fallback
 
 
 def normalize_messages(
-    messages: Any,
-    store: ReasoningStore | None,
-    cache_namespace: str,
-    repair_reasoning: bool,
-    keep_reasoning: bool,
+    messages: Any, store: ReasoningStore | None
 ) -> tuple[list[dict[str, Any]], int, int]:
     if not isinstance(messages, list):
         return [], 0, 0
     normalized_messages: list[dict[str, Any]] = []
     patched_count = 0
-    missing_count = 0
+    fallback_count = 0
     for message in messages:
-        normalized, patched, missing = normalize_message(
-            message,
-            store,
-            normalized_messages,
-            cache_namespace,
-            repair_reasoning,
-            keep_reasoning,
+        normalized, patched, fallback = normalize_message(
+            message, store, normalized_messages
         )
         normalized_messages.append(normalized)
         if patched:
             patched_count += 1
-        if missing:
-            missing_count += 1
-    return normalized_messages, patched_count, missing_count
+        if fallback:
+            fallback_count += 1
+    return normalized_messages, patched_count, fallback_count
 
 
 def assistant_needs_reasoning_for_tool_context(
@@ -292,40 +270,22 @@ def assistant_needs_reasoning_for_tool_context(
     return False
 
 
+def fallback_reasoning_content(message: dict[str, Any]) -> str:
+    if message.get("tool_calls"):
+        return "Compatibility placeholder: Cursor omitted DeepSeek reasoning_content for this tool-call turn."
+    return "Compatibility placeholder: Cursor omitted DeepSeek reasoning_content for this tool-result turn."
+
+
 def upstream_model_for(original_model: str, config: ProxyConfig) -> str:
-    if original_model.startswith("deepseek-"):
+    if config.allow_model_passthrough and original_model.startswith("deepseek-"):
         return original_model
     return config.upstream_model
-
-
-def reasoning_cache_namespace(
-    config: ProxyConfig,
-    upstream_model: str,
-    thinking: Any,
-    reasoning_effort: Any,
-    authorization: str | None = None,
-) -> str:
-    auth_hash = ""
-    if authorization:
-        auth_hash = hashlib.sha256(authorization.encode("utf-8")).hexdigest()
-    payload = {
-        "base_url": config.upstream_base_url,
-        "model": upstream_model,
-        "thinking": thinking,
-        "reasoning_effort": reasoning_effort,
-        "authorization_hash": auth_hash,
-    }
-    canonical = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def prepare_upstream_request(
     payload: dict[str, Any],
     config: ProxyConfig,
     store: ReasoningStore | None,
-    authorization: str | None = None,
 ) -> PreparedRequest:
     original_model = str(payload.get("model") or config.upstream_model)
     upstream_model = upstream_model_for(original_model, config)
@@ -337,6 +297,10 @@ def prepare_upstream_request(
         prepared["max_tokens"] = payload["max_completion_tokens"]
 
     prepared["model"] = upstream_model
+    messages, patched_count, fallback_count = normalize_messages(
+        payload.get("messages"), store
+    )
+    prepared["messages"] = messages
 
     if "tools" in prepared and isinstance(prepared["tools"], list):
         prepared["tools"] = [normalize_tool(tool) for tool in prepared["tools"]]
@@ -361,37 +325,17 @@ def prepare_upstream_request(
 
     thinking = prepared.get("thinking")
     thinking_enabled = isinstance(thinking, dict) and thinking.get("type") == "enabled"
-    thinking_disabled = (
-        isinstance(thinking, dict) and thinking.get("type") == "disabled"
-    )
     if thinking_enabled:
         prepared["reasoning_effort"] = normalize_reasoning_effort(
             prepared.get("reasoning_effort") or config.reasoning_effort
         )
 
-    cache_namespace = reasoning_cache_namespace(
-        config,
-        upstream_model,
-        prepared.get("thinking"),
-        prepared.get("reasoning_effort"),
-        authorization,
-    )
-    messages, patched_count, missing_count = normalize_messages(
-        payload.get("messages"),
-        store,
-        cache_namespace,
-        repair_reasoning=thinking_enabled,
-        keep_reasoning=not thinking_disabled,
-    )
-    prepared["messages"] = messages
-
     return PreparedRequest(
         payload=prepared,
         original_model=original_model,
         upstream_model=upstream_model,
-        cache_namespace=cache_namespace,
         patched_reasoning_messages=patched_count,
-        missing_reasoning_messages=missing_count,
+        fallback_reasoning_messages=fallback_count,
     )
 
 
@@ -399,7 +343,6 @@ def record_response_reasoning(
     response_payload: dict[str, Any],
     store: ReasoningStore | None,
     request_messages: list[dict[str, Any]],
-    cache_namespace: str = "",
 ) -> int:
     if store is None:
         return 0
@@ -407,7 +350,7 @@ def record_response_reasoning(
     choices = response_payload.get("choices")
     if not isinstance(choices, list):
         return stored
-    scope = conversation_scope(request_messages, cache_namespace)
+    scope = conversation_scope(request_messages)
     for choice in choices:
         if not isinstance(choice, dict):
             continue
@@ -422,13 +365,10 @@ def rewrite_response_body(
     original_model: str,
     store: ReasoningStore | None,
     request_messages: list[dict[str, Any]],
-    cache_namespace: str = "",
 ) -> bytes:
     response_payload = json.loads(body.decode("utf-8"))
     if isinstance(response_payload, dict):
-        record_response_reasoning(
-            response_payload, store, request_messages, cache_namespace
-        )
+        record_response_reasoning(response_payload, store, request_messages)
         if "model" in response_payload:
             response_payload["model"] = original_model
     return json.dumps(
