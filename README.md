@@ -1,6 +1,6 @@
 # deepseek-cursor-proxy
 
-Local proxy that fixes DeepSeek thinking models in Cursor by caching `reasoning_content` that Cursor drops after tool calls.
+A simple proxy that fixes DeepSeek thinking models (e.g. `deepseek-v4-pro` and `deepseek-v4-flash`) in Cursor by caching `reasoning_content` that Cursor drops after tool calls.
 
 ## Why This Exists
 
