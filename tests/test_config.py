@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from deepseek_cursor_proxy.config import (
+    DEFAULT_CONFIG_TEXT,
     ProxyConfig,
     default_config_path,
     default_reasoning_content_path,
@@ -43,8 +44,35 @@ class ConfigTests(unittest.TestCase):
             self.assertIn(
                 "model: deepseek-v4-pro", config_path.read_text(encoding="utf-8")
             )
+            self.assertNotIn(
+                "missing_reasoning_strategy",
+                config_path.read_text(encoding="utf-8"),
+            )
             self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
             self.assertEqual(config.upstream_model, "deepseek-v4-pro")
+            self.assertEqual(config.missing_reasoning_strategy, "recover")
+
+    def test_legacy_generated_default_config_removes_missing_reasoning_key(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+
+            with patch("deepseek_cursor_proxy.config.Path.home", return_value=home):
+                config_path = default_config_path()
+                config_path.parent.mkdir(parents=True)
+                config_path.write_text(
+                    DEFAULT_CONFIG_TEXT + "\nmissing_reasoning_strategy: reject\n",
+                    encoding="utf-8",
+                )
+
+                config = ProxyConfig.from_file(env={}, config_path=None)
+
+            self.assertEqual(config.missing_reasoning_strategy, "recover")
+            self.assertNotIn(
+                "missing_reasoning_strategy",
+                config_path.read_text(encoding="utf-8"),
+            )
 
     def test_missing_explicit_config_file_is_not_populated(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -75,6 +103,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.upstream_model, "deepseek-v4-flash")
         self.assertEqual(config.port, 9100)
         self.assertEqual(config.reasoning_content_path, reasoning_content_path)
+
+    def test_missing_reasoning_strategy_config_key_is_ignored(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text(
+                "missing_reasoning_strategy: reject\n",
+                encoding="utf-8",
+            )
+
+            config = ProxyConfig.from_file(env={}, config_path=config_path)
+
+        self.assertEqual(config.missing_reasoning_strategy, "recover")
 
     def test_environment_overrides_config_file(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -142,7 +182,6 @@ class ConfigTests(unittest.TestCase):
                 "PROXY_NGROK": "yes",
                 "PROXY_CORS": "true",
                 "PROXY_MAX_REQUEST_BODY_BYTES": "1234",
-                "MISSING_REASONING_STRATEGY": "reject",
                 "REASONING_CACHE_MAX_AGE_SECONDS": "60",
                 "REASONING_CACHE_MAX_ROWS": "50",
             },
@@ -153,13 +192,13 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.ngrok)
         self.assertTrue(config.cors)
         self.assertEqual(config.max_request_body_bytes, 1234)
-        self.assertEqual(config.missing_reasoning_strategy, "reject")
+        self.assertEqual(config.missing_reasoning_strategy, "recover")
         self.assertEqual(config.reasoning_cache_max_age_seconds, 60)
         self.assertEqual(config.reasoning_cache_max_rows, 50)
 
-    def test_invalid_missing_reasoning_strategy_defaults_to_recover(self) -> None:
+    def test_missing_reasoning_strategy_environment_is_ignored(self) -> None:
         config = ProxyConfig.from_file(
-            env={"MISSING_REASONING_STRATEGY": "invent"},
+            env={"MISSING_REASONING_STRATEGY": "reject"},
             config_path=Path("/does/not/exist"),
         )
 

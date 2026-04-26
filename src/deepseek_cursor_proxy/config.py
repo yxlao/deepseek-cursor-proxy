@@ -15,7 +15,10 @@ REASONING_CONTENT_FILE_NAME = "reasoning_content.sqlite3"
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
 MISSING = object()
-DEFAULT_CONFIG_TEXT = """# This file was created automatically at ~/.deepseek-cursor-proxy/config.yaml.
+DEFAULT_CONFIG_HEADER = (
+    "# This file was created automatically at ~/.deepseek-cursor-proxy/config.yaml."
+)
+DEFAULT_CONFIG_TEXT = f"""{DEFAULT_CONFIG_HEADER}
 # API keys are read from Cursor's Authorization header and forwarded upstream.
 
 # `model` is the fallback when a request has no model; Cursor's requested
@@ -35,7 +38,6 @@ max_request_body_bytes: 20971520
 cors: false
 
 reasoning_content_path: reasoning_content.sqlite3
-missing_reasoning_strategy: recover
 reasoning_cache_max_age_seconds: 604800
 reasoning_cache_max_rows: 10000
 """
@@ -74,6 +76,42 @@ def load_config_file(config_path: str | Path) -> dict[str, Any]:
     if not isinstance(loaded, Mapping):
         raise ValueError(f"Config file must contain a YAML mapping: {config_path}")
     return dict(loaded)
+
+
+def migrate_default_config_file(
+    settings: dict[str, Any],
+    config_path: Path,
+    live_env: Mapping[str, str],
+    original_config_path: str | Path | None,
+) -> dict[str, Any]:
+    if original_config_path is not None:
+        return settings
+    if "DEEPSEEK_CURSOR_PROXY_CONFIG_PATH" in live_env:
+        return settings
+    if config_path != default_config_path():
+        return settings
+    if "missing_reasoning_strategy" not in settings:
+        return settings
+
+    migrated = dict(settings)
+    migrated.pop("missing_reasoning_strategy", None)
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return migrated
+    if not text.startswith(DEFAULT_CONFIG_HEADER):
+        return settings
+
+    updated_lines = [
+        line
+        for line in text.splitlines()
+        if not line.strip().startswith("missing_reasoning_strategy:")
+    ]
+    updated_text = "\n".join(updated_lines) + "\n"
+    if updated_text != text:
+        config_path.write_text(updated_text, encoding="utf-8")
+        config_path.chmod(0o600)
+    return migrated
 
 
 def resolve_config_path(
@@ -150,6 +188,7 @@ def settings_and_env(
     env: Mapping[str, str] | None, config_path: str | Path | None
 ) -> tuple[dict[str, Any], dict[str, str], Path]:
     live_env = dict(os.environ if env is None else env)
+    original_config_path = config_path
     config_path = resolve_config_path(live_env, config_path)
     if (
         config_path == default_config_path()
@@ -157,7 +196,14 @@ def settings_and_env(
         and not config_path.exists()
     ):
         populate_default_config_file(config_path)
-    return load_config_file(config_path), live_env, config_path
+    settings = load_config_file(config_path)
+    settings = migrate_default_config_file(
+        settings,
+        config_path,
+        live_env,
+        original_config_path,
+    )
+    return settings, live_env, config_path
 
 
 @dataclass(frozen=True)
@@ -206,22 +252,6 @@ class ProxyConfig:
             thinking = "pass-through"
         if thinking not in {"enabled", "disabled", "pass-through"}:
             thinking = "enabled"
-
-        missing_reasoning_strategy = (
-            as_str(
-                setting_value(
-                    settings,
-                    live_env,
-                    "missing_reasoning_strategy",
-                    "MISSING_REASONING_STRATEGY",
-                ),
-                "recover",
-            )
-            .strip()
-            .lower()
-        )
-        if missing_reasoning_strategy not in {"recover", "reject"}:
-            missing_reasoning_strategy = "recover"
 
         return cls(
             host=as_str(
@@ -307,7 +337,6 @@ class ProxyConfig:
                 default_reasoning_content_path(),
                 config_dir,
             ),
-            missing_reasoning_strategy=missing_reasoning_strategy,
             reasoning_cache_max_age_seconds=as_int(
                 setting_value(
                     settings,

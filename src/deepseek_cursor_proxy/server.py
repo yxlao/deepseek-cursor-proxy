@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import gzip
+from http.client import HTTPException
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -493,7 +494,11 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         finalized = False
         pending_recovery_notice = recovery_notice
         while True:
-            line = response.readline()
+            try:
+                line = response.readline()
+            except (HTTPException, OSError) as exc:
+                LOG.warning("upstream streaming response read failed: %s", exc)
+                return False
             if not line:
                 break
             rewritten, finalized, pending_recovery_notice = self._rewrite_sse_line(

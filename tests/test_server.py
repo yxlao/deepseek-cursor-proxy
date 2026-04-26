@@ -41,6 +41,14 @@ class FakeStreamingResponse:
         return self._lines.pop(0)
 
 
+class FailingStreamingResponse:
+    status = 200
+    headers = {"Content-Type": "text/event-stream"}
+
+    def readline(self) -> bytes:
+        raise OSError("record layer failure")
+
+
 class BrokenPipeWfile:
     def write(self, body: bytes) -> None:
         raise BrokenPipeError("test disconnect")
@@ -157,6 +165,26 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(sent)
         self.assertEqual(response.readline_calls, 1)
         self.assertIn("sending streaming response chunk", "\n".join(captured.output))
+
+    def test_streaming_response_handles_upstream_read_failure(self) -> None:
+        handler = make_proxy_handler(BytesIO())
+
+        try:
+            with self.assertLogs("deepseek_cursor_proxy", level="WARNING") as captured:
+                sent = handler._proxy_streaming_response(
+                    FailingStreamingResponse(),
+                    "deepseek-v4-pro",
+                    [{"role": "user", "content": "hi"}],
+                    "cache-namespace",
+                )
+        finally:
+            handler.server.reasoning_store.close()
+
+        self.assertFalse(sent)
+        self.assertIn(
+            "upstream streaming response read failed",
+            "\n".join(captured.output),
+        )
 
 
 if __name__ == "__main__":
