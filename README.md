@@ -117,7 +117,7 @@ Persistent settings live in `~/.deepseek-cursor-proxy/config.yaml`. Command-line
 
 Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.
 
-![Chatting with DeepSeek in Cursor](assets/cursor_chat.png)
+<img src="assets/cursor_chat.png" width="480" alt="Chatting with DeepSeek in Cursor">
 
 ## How It Works
 

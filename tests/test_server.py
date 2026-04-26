@@ -11,6 +11,7 @@ from deepseek_cursor_proxy.config import ProxyConfig
 from deepseek_cursor_proxy.reasoning_store import ReasoningStore
 from deepseek_cursor_proxy.server import (
     DeepSeekProxyHandler,
+    build_arg_parser,
     read_response_body,
     summarize_chat_payload,
 )
@@ -72,6 +73,21 @@ def make_proxy_handler(wfile: object) -> DeepSeekProxyHandler:
 
 
 class ServerTests(unittest.TestCase):
+    def test_cli_boolean_overrides_have_on_and_off_forms(self) -> None:
+        args = build_arg_parser().parse_args(
+            [
+                "--no-ngrok",
+                "--no-verbose",
+                "--no-display-reasoning",
+                "--cors",
+            ]
+        )
+
+        self.assertFalse(args.ngrok)
+        self.assertFalse(args.verbose)
+        self.assertFalse(args.display_reasoning)
+        self.assertTrue(args.cors)
+
     def test_read_response_body_handles_gzip(self) -> None:
         body = gzip.compress(b'{"ok":true}')
 

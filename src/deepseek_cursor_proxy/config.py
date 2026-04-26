@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-import os
 
 import yaml
 
@@ -38,6 +37,7 @@ max_request_body_bytes: 20971520
 cors: false
 
 reasoning_content_path: reasoning_content.sqlite3
+missing_reasoning_strategy: recover
 reasoning_cache_max_age_seconds: 604800
 reasoning_cache_max_rows: 10000
 """
@@ -78,61 +78,11 @@ def load_config_file(config_path: str | Path) -> dict[str, Any]:
     return dict(loaded)
 
 
-def migrate_default_config_file(
-    settings: dict[str, Any],
-    config_path: Path,
-    live_env: Mapping[str, str],
-    original_config_path: str | Path | None,
-) -> dict[str, Any]:
-    if original_config_path is not None:
-        return settings
-    if "DEEPSEEK_CURSOR_PROXY_CONFIG_PATH" in live_env:
-        return settings
-    if config_path != default_config_path():
-        return settings
-    if "missing_reasoning_strategy" not in settings:
-        return settings
-
-    migrated = dict(settings)
-    migrated.pop("missing_reasoning_strategy", None)
-    try:
-        text = config_path.read_text(encoding="utf-8")
-    except OSError:
-        return migrated
-    if not text.startswith(DEFAULT_CONFIG_HEADER):
-        return settings
-
-    updated_lines = [
-        line
-        for line in text.splitlines()
-        if not line.strip().startswith("missing_reasoning_strategy:")
-    ]
-    updated_text = "\n".join(updated_lines) + "\n"
-    if updated_text != text:
-        config_path.write_text(updated_text, encoding="utf-8")
-        config_path.chmod(0o600)
-    return migrated
+def resolve_config_path(config_path: str | Path | None) -> Path:
+    return Path(config_path or default_config_path()).expanduser()
 
 
-def resolve_config_path(
-    env: Mapping[str, str] | None, config_path: str | Path | None
-) -> Path:
-    live_env = os.environ if env is None else env
-    return Path(
-        config_path
-        or live_env.get("DEEPSEEK_CURSOR_PROXY_CONFIG_PATH")
-        or default_config_path()
-    ).expanduser()
-
-
-def setting_value(
-    settings: Mapping[str, Any],
-    env: Mapping[str, str],
-    key: str,
-    env_name: str,
-) -> Any:
-    if env_name in env:
-        return env[env_name]
+def setting_value(settings: Mapping[str, Any], key: str) -> Any:
     return settings.get(key, MISSING)
 
 
@@ -184,26 +134,29 @@ def as_path(value: Any, default_path: Path, relative_base: Path) -> Path:
     return relative_base / candidate_path
 
 
-def settings_and_env(
-    env: Mapping[str, str] | None, config_path: str | Path | None
-) -> tuple[dict[str, Any], dict[str, str], Path]:
-    live_env = dict(os.environ if env is None else env)
-    original_config_path = config_path
-    config_path = resolve_config_path(live_env, config_path)
-    if (
-        config_path == default_config_path()
-        and "DEEPSEEK_CURSOR_PROXY_CONFIG_PATH" not in live_env
-        and not config_path.exists()
-    ):
-        populate_default_config_file(config_path)
-    settings = load_config_file(config_path)
-    settings = migrate_default_config_file(
-        settings,
-        config_path,
-        live_env,
-        original_config_path,
-    )
-    return settings, live_env, config_path
+def settings_from_config(
+    config_path: str | Path | None,
+) -> tuple[dict[str, Any], Path]:
+    resolved_config_path = resolve_config_path(config_path)
+    if config_path is None and not resolved_config_path.exists():
+        populate_default_config_file(resolved_config_path)
+    return load_config_file(resolved_config_path), resolved_config_path
+
+
+def normalize_thinking(value: Any) -> str:
+    thinking = as_str(value, "enabled").strip().lower()
+    if thinking in {"passthrough", "pass-through", "pass_through"}:
+        return "pass-through"
+    if thinking in {"enabled", "disabled"}:
+        return thinking
+    return "enabled"
+
+
+def normalize_missing_reasoning_strategy(value: Any) -> str:
+    strategy = as_str(value, "recover").strip().lower()
+    if strategy in {"recover", "reject"}:
+        return strategy
+    return "recover"
 
 
 @dataclass(frozen=True)
@@ -212,7 +165,6 @@ class ProxyConfig:
     port: int = 9000
     upstream_base_url: str = "https://api.deepseek.com"
     upstream_model: str = "deepseek-v4-pro"
-    allow_model_passthrough: bool = False
     thinking: str = "enabled"
     reasoning_effort: str = "high"
     request_timeout: float = 300.0
@@ -229,166 +181,71 @@ class ProxyConfig:
     @classmethod
     def from_file(
         cls: type[ProxyConfig],
-        env: Mapping[str, str] | None = None,
         config_path: str | Path | None = None,
     ) -> "ProxyConfig":
-        settings, live_env, resolved_config_path = settings_and_env(env, config_path)
+        settings, resolved_config_path = settings_from_config(config_path)
         config_dir = resolved_config_path.parent
-
-        thinking = (
-            as_str(
-                setting_value(
-                    settings,
-                    live_env,
-                    "thinking",
-                    "DEEPSEEK_THINKING",
-                ),
-                "enabled",
-            )
-            .strip()
-            .lower()
-        )
-        if thinking in {"passthrough", "pass-through", "pass_through"}:
-            thinking = "pass-through"
-        if thinking not in {"enabled", "disabled", "pass-through"}:
-            thinking = "enabled"
 
         return cls(
             host=as_str(
-                setting_value(
-                    settings,
-                    live_env,
-                    "host",
-                    "PROXY_HOST",
-                ),
+                setting_value(settings, "host"),
                 "127.0.0.1",
             ),
             port=as_int(
-                setting_value(
-                    settings,
-                    live_env,
-                    "port",
-                    "PROXY_PORT",
-                ),
+                setting_value(settings, "port"),
                 9000,
             ),
             upstream_base_url=as_str(
-                setting_value(
-                    settings,
-                    live_env,
-                    "base_url",
-                    "DEEPSEEK_BASE_URL",
-                ),
+                setting_value(settings, "base_url"),
                 "https://api.deepseek.com",
             ).rstrip("/"),
             upstream_model=as_str(
-                setting_value(
-                    settings,
-                    live_env,
-                    "model",
-                    "DEEPSEEK_MODEL",
-                ),
+                setting_value(settings, "model"),
                 "deepseek-v4-pro",
             ),
-            allow_model_passthrough=as_bool(
-                setting_value(
-                    settings,
-                    live_env,
-                    "allow_model_passthrough",
-                    "DEEPSEEK_ALLOW_MODEL_PASSTHROUGH",
-                ),
-                False,
-            ),
-            thinking=thinking,
+            thinking=normalize_thinking(setting_value(settings, "thinking")),
             reasoning_effort=as_str(
-                setting_value(
-                    settings,
-                    live_env,
-                    "reasoning_effort",
-                    "DEEPSEEK_REASONING_EFFORT",
-                ),
+                setting_value(settings, "reasoning_effort"),
                 "high",
             ),
             request_timeout=as_float(
-                setting_value(
-                    settings,
-                    live_env,
-                    "request_timeout",
-                    "PROXY_REQUEST_TIMEOUT",
-                ),
+                setting_value(settings, "request_timeout"),
                 300.0,
             ),
             max_request_body_bytes=as_int(
-                setting_value(
-                    settings,
-                    live_env,
-                    "max_request_body_bytes",
-                    "PROXY_MAX_REQUEST_BODY_BYTES",
-                ),
+                setting_value(settings, "max_request_body_bytes"),
                 20 * 1024 * 1024,
             ),
             reasoning_content_path=as_path(
-                setting_value(
-                    settings,
-                    live_env,
-                    "reasoning_content_path",
-                    "REASONING_CONTENT_PATH",
-                ),
+                setting_value(settings, "reasoning_content_path"),
                 default_reasoning_content_path(),
                 config_dir,
             ),
+            missing_reasoning_strategy=normalize_missing_reasoning_strategy(
+                setting_value(settings, "missing_reasoning_strategy")
+            ),
             reasoning_cache_max_age_seconds=as_int(
-                setting_value(
-                    settings,
-                    live_env,
-                    "reasoning_cache_max_age_seconds",
-                    "REASONING_CACHE_MAX_AGE_SECONDS",
-                ),
+                setting_value(settings, "reasoning_cache_max_age_seconds"),
                 7 * 24 * 60 * 60,
             ),
             reasoning_cache_max_rows=as_int(
-                setting_value(
-                    settings,
-                    live_env,
-                    "reasoning_cache_max_rows",
-                    "REASONING_CACHE_MAX_ROWS",
-                ),
+                setting_value(settings, "reasoning_cache_max_rows"),
                 10000,
             ),
             cursor_display_reasoning=as_bool(
-                setting_value(
-                    settings,
-                    live_env,
-                    "display_reasoning",
-                    "CURSOR_DISPLAY_REASONING",
-                ),
+                setting_value(settings, "display_reasoning"),
                 True,
             ),
             cors=as_bool(
-                setting_value(
-                    settings,
-                    live_env,
-                    "cors",
-                    "PROXY_CORS",
-                ),
+                setting_value(settings, "cors"),
                 False,
             ),
             verbose=as_bool(
-                setting_value(
-                    settings,
-                    live_env,
-                    "verbose",
-                    "PROXY_VERBOSE",
-                ),
+                setting_value(settings, "verbose"),
                 False,
             ),
             ngrok=as_bool(
-                setting_value(
-                    settings,
-                    live_env,
-                    "ngrok",
-                    "PROXY_NGROK",
-                ),
+                setting_value(settings, "ngrok"),
                 False,
             ),
         )

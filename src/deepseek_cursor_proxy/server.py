@@ -606,21 +606,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         help=f"YAML config file, default {default_config_path()}",
     )
-    parser.add_argument(
-        "--host", help="Bind host, default from config, PROXY_HOST, or 127.0.0.1"
-    )
+    parser.add_argument("--host", help="Bind host, default from config or 127.0.0.1")
     parser.add_argument(
         "--port",
         type=int,
-        help="Bind port, default from config, PROXY_PORT, or 9000",
+        help="Bind port, default from config or 9000",
     )
     parser.add_argument(
         "--model",
-        help="Fallback DeepSeek model when the request has no model, default from config, DEEPSEEK_MODEL, or deepseek-v4-pro",
+        help=(
+            "Fallback DeepSeek model when the request has no model, "
+            "default from config or deepseek-v4-pro"
+        ),
     )
     parser.add_argument(
         "--base-url",
-        help="DeepSeek base URL, default from config, DEEPSEEK_BASE_URL, or https://api.deepseek.com",
+        help=("DeepSeek base URL, default from config or https://api.deepseek.com"),
+    )
+    parser.add_argument(
+        "--thinking",
+        choices=["enabled", "disabled", "pass-through"],
+        help="DeepSeek thinking mode, default from config or enabled",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=["low", "medium", "high", "max", "xhigh"],
+        help="DeepSeek reasoning effort, default from config or high",
     )
     parser.add_argument(
         "--reasoning-content-path",
@@ -632,18 +643,47 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ngrok",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Start an ngrok tunnel and print the Cursor base URL",
     )
     parser.add_argument(
         "--verbose",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Log detailed request lifecycle metadata and full payloads",
     )
     parser.add_argument(
-        "--no-cursor-display-reasoning",
-        action="store_true",
-        help="Do not mirror reasoning_content into Cursor-visible <think> content",
+        "--display-reasoning",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Mirror reasoning_content into Cursor-visible <think> content",
+    )
+    parser.add_argument(
+        "--cors",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Send permissive CORS headers",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        help="Upstream request timeout in seconds, default from config or 300",
+    )
+    parser.add_argument(
+        "--max-request-body-bytes",
+        type=int,
+        help="Maximum accepted request body size, default from config",
+    )
+    parser.add_argument(
+        "--reasoning-cache-max-age-seconds",
+        type=int,
+        help="Maximum reasoning cache row age in seconds, default from config",
+    )
+    parser.add_argument(
+        "--reasoning-cache-max-rows",
+        type=int,
+        help="Maximum reasoning cache rows, default from config",
     )
     parser.add_argument(
         "--missing-reasoning-strategy",
@@ -872,23 +912,39 @@ def main(argv: list[str] | None = None) -> int:
         LOG.error("%s", exc)
         return 2
     updates: dict[str, Any] = {}
-    if args.host:
+    if args.host is not None:
         updates["host"] = args.host
-    if args.port:
+    if args.port is not None:
         updates["port"] = args.port
-    if args.model:
+    if args.model is not None:
         updates["upstream_model"] = args.model
-    if args.base_url:
+    if args.base_url is not None:
         updates["upstream_base_url"] = args.base_url.rstrip("/")
-    if args.reasoning_content_path:
+    if args.thinking is not None:
+        updates["thinking"] = args.thinking
+    if args.reasoning_effort is not None:
+        updates["reasoning_effort"] = args.reasoning_effort
+    if args.reasoning_content_path is not None:
         updates["reasoning_content_path"] = args.reasoning_content_path
-    if args.ngrok:
-        updates["ngrok"] = True
-    if args.verbose:
-        updates["verbose"] = True
-    if args.no_cursor_display_reasoning:
-        updates["cursor_display_reasoning"] = False
-    if args.missing_reasoning_strategy:
+    if args.ngrok is not None:
+        updates["ngrok"] = args.ngrok
+    if args.verbose is not None:
+        updates["verbose"] = args.verbose
+    if args.display_reasoning is not None:
+        updates["cursor_display_reasoning"] = args.display_reasoning
+    if args.cors is not None:
+        updates["cors"] = args.cors
+    if args.request_timeout is not None:
+        updates["request_timeout"] = args.request_timeout
+    if args.max_request_body_bytes is not None:
+        updates["max_request_body_bytes"] = args.max_request_body_bytes
+    if args.reasoning_cache_max_age_seconds is not None:
+        updates["reasoning_cache_max_age_seconds"] = (
+            args.reasoning_cache_max_age_seconds
+        )
+    if args.reasoning_cache_max_rows is not None:
+        updates["reasoning_cache_max_rows"] = args.reasoning_cache_max_rows
+    if args.missing_reasoning_strategy is not None:
         updates["missing_reasoning_strategy"] = args.missing_reasoning_strategy
     if updates:
         config = replace(config, **updates)

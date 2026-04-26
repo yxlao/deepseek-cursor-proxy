@@ -8,7 +8,6 @@ import unittest
 from unittest.mock import patch
 
 from deepseek_cursor_proxy.config import (
-    DEFAULT_CONFIG_TEXT,
     ProxyConfig,
     default_config_path,
     default_reasoning_content_path,
@@ -37,48 +36,26 @@ class ConfigTests(unittest.TestCase):
             home = Path(temp_dir)
 
             with patch("deepseek_cursor_proxy.config.Path.home", return_value=home):
-                config = ProxyConfig.from_file(env={}, config_path=None)
+                config = ProxyConfig.from_file(config_path=None)
                 config_path = default_config_path()
 
             self.assertTrue(config_path.exists())
             self.assertIn(
                 "model: deepseek-v4-pro", config_path.read_text(encoding="utf-8")
             )
-            self.assertNotIn(
-                "missing_reasoning_strategy",
+            self.assertIn(
+                "missing_reasoning_strategy: recover",
                 config_path.read_text(encoding="utf-8"),
             )
             self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
             self.assertEqual(config.upstream_model, "deepseek-v4-pro")
             self.assertEqual(config.missing_reasoning_strategy, "recover")
 
-    def test_legacy_generated_default_config_removes_missing_reasoning_key(
-        self,
-    ) -> None:
-        with TemporaryDirectory() as temp_dir:
-            home = Path(temp_dir)
-
-            with patch("deepseek_cursor_proxy.config.Path.home", return_value=home):
-                config_path = default_config_path()
-                config_path.parent.mkdir(parents=True)
-                config_path.write_text(
-                    DEFAULT_CONFIG_TEXT + "\nmissing_reasoning_strategy: reject\n",
-                    encoding="utf-8",
-                )
-
-                config = ProxyConfig.from_file(env={}, config_path=None)
-
-            self.assertEqual(config.missing_reasoning_strategy, "recover")
-            self.assertNotIn(
-                "missing_reasoning_strategy",
-                config_path.read_text(encoding="utf-8"),
-            )
-
     def test_missing_explicit_config_file_is_not_populated(self) -> None:
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "missing.yaml"
 
-            config = ProxyConfig.from_file(env={}, config_path=config_path)
+            config = ProxyConfig.from_file(config_path=config_path)
 
             self.assertFalse(config_path.exists())
             self.assertEqual(config.upstream_model, "deepseek-v4-pro")
@@ -90,52 +67,67 @@ class ConfigTests(unittest.TestCase):
             config_path.write_text(
                 "\n".join(
                     [
+                        "base_url: https://example.com/v1/",
                         "model: deepseek-v4-flash",
+                        "thinking: pass_through",
+                        "reasoning_effort: max",
                         "port: 9100",
+                        "host: 0.0.0.0",
+                        "ngrok: true",
+                        "verbose: true",
+                        "request_timeout: 123.5",
+                        "max_request_body_bytes: 1234",
+                        "cors: true",
+                        "display_reasoning: false",
                         f"reasoning_content_path: {reasoning_content_path}",
+                        "missing_reasoning_strategy: reject",
+                        "reasoning_cache_max_age_seconds: 60",
+                        "reasoning_cache_max_rows: 50",
                     ]
                 ),
                 encoding="utf-8",
             )
 
-            config = ProxyConfig.from_file(env={}, config_path=config_path)
+            config = ProxyConfig.from_file(config_path=config_path)
 
+        self.assertEqual(config.upstream_base_url, "https://example.com/v1")
         self.assertEqual(config.upstream_model, "deepseek-v4-flash")
+        self.assertEqual(config.thinking, "pass-through")
+        self.assertEqual(config.reasoning_effort, "max")
+        self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 9100)
+        self.assertTrue(config.ngrok)
+        self.assertTrue(config.verbose)
+        self.assertEqual(config.request_timeout, 123.5)
+        self.assertEqual(config.max_request_body_bytes, 1234)
+        self.assertTrue(config.cors)
+        self.assertFalse(config.cursor_display_reasoning)
         self.assertEqual(config.reasoning_content_path, reasoning_content_path)
+        self.assertEqual(config.missing_reasoning_strategy, "reject")
+        self.assertEqual(config.reasoning_cache_max_age_seconds, 60)
+        self.assertEqual(config.reasoning_cache_max_rows, 50)
 
-    def test_missing_reasoning_strategy_config_key_is_ignored(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
-            config_path.write_text(
-                "missing_reasoning_strategy: reject\n",
-                encoding="utf-8",
-            )
-
-            config = ProxyConfig.from_file(env={}, config_path=config_path)
-
-        self.assertEqual(config.missing_reasoning_strategy, "recover")
-
-    def test_environment_overrides_config_file(self) -> None:
+    def test_invalid_config_values_fall_back_to_defaults(self) -> None:
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(
                 "\n".join(
                     [
-                        "verbose: false",
+                        "thinking: maybe",
+                        "missing_reasoning_strategy: maybe",
+                        "port: nope",
+                        "verbose: maybe",
                     ]
                 ),
                 encoding="utf-8",
             )
 
-            config = ProxyConfig.from_file(
-                env={
-                    "PROXY_VERBOSE": "true",
-                },
-                config_path=config_path,
-            )
+            config = ProxyConfig.from_file(config_path=config_path)
 
-        self.assertTrue(config.verbose)
+        self.assertEqual(config.thinking, "enabled")
+        self.assertEqual(config.missing_reasoning_strategy, "recover")
+        self.assertEqual(config.port, 9000)
+        self.assertFalse(config.verbose)
 
     def test_relative_reasoning_content_path_in_config_is_relative_to_config_file(
         self,
@@ -151,58 +143,11 @@ class ConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = ProxyConfig.from_file(env={}, config_path=config_path)
+            config = ProxyConfig.from_file(config_path=config_path)
 
         self.assertEqual(
             config.reasoning_content_path, Path(temp_dir) / "custom.sqlite3"
         )
-
-    def test_relative_reasoning_content_path_from_env_stays_inside_app_directory(
-        self,
-    ) -> None:
-        home = Path("/tmp/home")
-
-        with patch("deepseek_cursor_proxy.config.Path.home", return_value=home):
-            config = ProxyConfig.from_file(
-                env={
-                    "REASONING_CONTENT_PATH": "custom.sqlite3",
-                },
-                config_path=None,
-            )
-
-        self.assertEqual(
-            config.reasoning_content_path,
-            home / ".deepseek-cursor-proxy" / "custom.sqlite3",
-        )
-
-    def test_verbose_logging_can_be_enabled_from_env(self) -> None:
-        config = ProxyConfig.from_file(
-            env={
-                "PROXY_VERBOSE": "true",
-                "PROXY_NGROK": "yes",
-                "PROXY_CORS": "true",
-                "PROXY_MAX_REQUEST_BODY_BYTES": "1234",
-                "REASONING_CACHE_MAX_AGE_SECONDS": "60",
-                "REASONING_CACHE_MAX_ROWS": "50",
-            },
-            config_path=Path("/does/not/exist"),
-        )
-
-        self.assertTrue(config.verbose)
-        self.assertTrue(config.ngrok)
-        self.assertTrue(config.cors)
-        self.assertEqual(config.max_request_body_bytes, 1234)
-        self.assertEqual(config.missing_reasoning_strategy, "recover")
-        self.assertEqual(config.reasoning_cache_max_age_seconds, 60)
-        self.assertEqual(config.reasoning_cache_max_rows, 50)
-
-    def test_missing_reasoning_strategy_environment_is_ignored(self) -> None:
-        config = ProxyConfig.from_file(
-            env={"MISSING_REASONING_STRATEGY": "reject"},
-            config_path=Path("/does/not/exist"),
-        )
-
-        self.assertEqual(config.missing_reasoning_strategy, "recover")
 
     def test_cursor_reasoning_display_can_be_disabled_from_config(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -216,39 +161,9 @@ class ConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = ProxyConfig.from_file(env={}, config_path=config_path)
+            config = ProxyConfig.from_file(config_path=config_path)
 
         self.assertFalse(config.cursor_display_reasoning)
-
-    def test_config_path_can_be_overridden_from_environment(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            first_config_path = Path(temp_dir) / "first.yaml"
-            second_config_path = Path(temp_dir) / "second.yaml"
-            first_config_path.write_text("port: 9100\n", encoding="utf-8")
-            second_config_path.write_text("port: 9200\n", encoding="utf-8")
-
-            config = ProxyConfig.from_file(
-                env={"DEEPSEEK_CURSOR_PROXY_CONFIG_PATH": str(second_config_path)},
-                config_path=None,
-            )
-
-        self.assertEqual(config.port, 9200)
-
-    def test_explicit_config_file_path_wins_over_config_path_environment_variable(
-        self,
-    ) -> None:
-        with TemporaryDirectory() as temp_dir:
-            first_config_path = Path(temp_dir) / "first.yaml"
-            second_config_path = Path(temp_dir) / "second.yaml"
-            first_config_path.write_text("port: 9100\n", encoding="utf-8")
-            second_config_path.write_text("port: 9200\n", encoding="utf-8")
-
-            config = ProxyConfig.from_file(
-                env={"DEEPSEEK_CURSOR_PROXY_CONFIG_PATH": str(second_config_path)},
-                config_path=first_config_path,
-            )
-
-        self.assertEqual(config.port, 9100)
 
     def test_invalid_yaml_config_raises_value_error(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -256,18 +171,31 @@ class ConfigTests(unittest.TestCase):
             config_path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
 
             with self.assertRaises(ValueError):
-                ProxyConfig.from_file(env={}, config_path=config_path)
+                ProxyConfig.from_file(config_path=config_path)
 
-    def test_from_file_does_not_mutate_process_environment(self) -> None:
+    def test_process_environment_does_not_override_config(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text("verbose: false\n", encoding="utf-8")
+
         with patch.dict(
             "os.environ",
             {
                 "PROXY_VERBOSE": "true",
+                "DEEPSEEK_CURSOR_PROXY_CONFIG_PATH": "/ignored.yaml",
             },
             clear=True,
         ):
-            ProxyConfig.from_file(config_path=Path("/does/not/exist"))
-            self.assertEqual(dict(os.environ), {"PROXY_VERBOSE": "true"})
+            config = ProxyConfig.from_file(config_path=config_path)
+            self.assertEqual(
+                dict(os.environ),
+                {
+                    "PROXY_VERBOSE": "true",
+                    "DEEPSEEK_CURSOR_PROXY_CONFIG_PATH": "/ignored.yaml",
+                },
+            )
+
+        self.assertFalse(config.verbose)
 
 
 if __name__ == "__main__":
