@@ -4,7 +4,7 @@ Compatibility proxy connecting Cursor to DeepSeek thinking models (`deepseek-v4-
 
 ## What It Does
 
-- ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it. If old or mixed-model chat history cannot be repaired exactly, the proxy can recover by continuing from recent context and showing a small Cursor-visible notice. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
+- ✅ Injects `reasoning_content` into outgoing tool-call requests since Cursor does not include the field, restoring previously cached reasoning from regular and streamed DeepSeek responses. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
 - ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text so that thinking tokens are shown in Cursor's UI. For BYOK/proxy mode, Cursor renders this as normal text, not as a native collapsible thinking block.
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy through a public HTTPS URL.
 - ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
@@ -136,26 +136,6 @@ Run without ngrok for local curl testing:
 
 ```bash
 PROXY_NGROK=false deepseek-cursor-proxy --port 9000 --verbose
-```
-
-If the current chat contains thinking-mode tool-call history whose original DeepSeek `reasoning_content` is not in the local cache, the default `recover` mode avoids hard failure by dropping older unrecoverable tool-call history, forwarding the latest user request with a system recovery note, logging what happened, and prefixing the next assistant response with:
-
-```text
-[deepseek-cursor-proxy] Recovered this DeepSeek chat because older tool-call reasoning was unavailable; continuing with recent context only.
-```
-
-This commonly happens when continuing an older chat after a proxy restart, cache clear, cache format/config change, or switching from another model into DeepSeek. If you run strict debugging mode, the proxy returns `missing_reasoning_content` instead of recovering and the error message tells you to switch back to recover mode.
-
-The recovery strategy is not a config-file setting. For strict DeepSeek API behavior while debugging, pass the runtime flag:
-
-```bash
-deepseek-cursor-proxy --verbose --missing-reasoning-strategy reject
-```
-
-To turn automatic recovery back on, restart without that flag or pass:
-
-```bash
-deepseek-cursor-proxy --verbose --missing-reasoning-strategy recover
 ```
 
 Use another config file:
