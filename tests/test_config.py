@@ -142,7 +142,7 @@ class ConfigTests(unittest.TestCase):
                 "PROXY_NGROK": "yes",
                 "PROXY_CORS": "true",
                 "PROXY_MAX_REQUEST_BODY_BYTES": "1234",
-                "MISSING_REASONING_STRATEGY": "placeholder",
+                "MISSING_REASONING_STRATEGY": "reject",
                 "REASONING_CACHE_MAX_AGE_SECONDS": "60",
                 "REASONING_CACHE_MAX_ROWS": "50",
             },
@@ -153,17 +153,17 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.ngrok)
         self.assertTrue(config.cors)
         self.assertEqual(config.max_request_body_bytes, 1234)
-        self.assertEqual(config.missing_reasoning_strategy, "placeholder")
+        self.assertEqual(config.missing_reasoning_strategy, "reject")
         self.assertEqual(config.reasoning_cache_max_age_seconds, 60)
         self.assertEqual(config.reasoning_cache_max_rows, 50)
 
-    def test_invalid_missing_reasoning_strategy_defaults_to_reject(self) -> None:
+    def test_invalid_missing_reasoning_strategy_defaults_to_recover(self) -> None:
         config = ProxyConfig.from_file(
             env={"MISSING_REASONING_STRATEGY": "invent"},
             config_path=Path("/does/not/exist"),
         )
 
-        self.assertEqual(config.missing_reasoning_strategy, "reject")
+        self.assertEqual(config.missing_reasoning_strategy, "recover")
 
     def test_cursor_reasoning_display_can_be_disabled_from_config(self) -> None:
         with TemporaryDirectory() as temp_dir:

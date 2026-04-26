@@ -67,11 +67,13 @@ CURSOR_THINKING_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
-PLACEHOLDER_REASONING_CONTENT = (
-    "[deepseek-cursor-proxy placeholder reasoning_content: original DeepSeek "
-    "reasoning_content was missing from Cursor history and unavailable in the "
-    "local cache. This is an opt-in compatibility fallback, not the original "
-    "model reasoning.]"
+RECOVERY_NOTICE_TEXT = "Note: recovered this DeepSeek chat with recent context only."
+RECOVERY_NOTICE_CONTENT = f"{RECOVERY_NOTICE_TEXT}\n\n"
+RECOVERY_SYSTEM_CONTENT = (
+    "deepseek-cursor-proxy recovered this request because older DeepSeek "
+    "thinking-mode tool-call reasoning_content was unavailable. Earlier chat "
+    "history was omitted; continue using only the remaining user request and "
+    "available context."
 )
 
 
@@ -82,8 +84,10 @@ class PreparedRequest:
     upstream_model: str
     cache_namespace: str
     patched_reasoning_messages: int
-    placeholder_reasoning_messages: int
     missing_reasoning_messages: int
+    recovered_reasoning_messages: int = 0
+    recovery_dropped_messages: int = 0
+    recovery_notice: str | None = None
 
 
 def normalize_reasoning_effort(value: Any) -> str:
@@ -203,8 +207,7 @@ def normalize_message(
     cache_namespace: str,
     repair_reasoning: bool,
     keep_reasoning: bool,
-    missing_reasoning_strategy: str,
-) -> tuple[dict[str, Any], bool, bool, bool]:
+) -> tuple[dict[str, Any], bool, bool]:
     if not isinstance(message, dict):
         message = {"role": "user", "content": str(message)}
     normalized = {key: value for key, value in message.items() if key in MESSAGE_FIELDS}
@@ -228,7 +231,6 @@ def normalize_message(
         ]
 
     patched = False
-    placeholder = False
     missing = False
     if normalized["role"] == "assistant":
         if not keep_reasoning:
@@ -249,17 +251,13 @@ def normalize_message(
                         normalized["reasoning_content"] = restored
                         patched = True
                 if needs_reasoning and not patched:
-                    if missing_reasoning_strategy == "placeholder":
-                        normalized["reasoning_content"] = PLACEHOLDER_REASONING_CONTENT
-                        placeholder = True
-                    else:
-                        missing = True
+                    missing = True
 
     allowed_fields = ROLE_MESSAGE_FIELDS.get(str(normalized["role"]), MESSAGE_FIELDS)
     normalized = {
         key: value for key, value in normalized.items() if key in allowed_fields
     }
-    return normalized, patched, placeholder, missing
+    return normalized, patched, missing
 
 
 def normalize_messages(
@@ -268,32 +266,102 @@ def normalize_messages(
     cache_namespace: str,
     repair_reasoning: bool,
     keep_reasoning: bool,
-    missing_reasoning_strategy: str,
-) -> tuple[list[dict[str, Any]], int, int, int]:
+) -> tuple[list[dict[str, Any]], int, list[int]]:
     if not isinstance(messages, list):
-        return [], 0, 0, 0
+        return [], 0, []
     normalized_messages: list[dict[str, Any]] = []
     patched_count = 0
-    placeholder_count = 0
-    missing_count = 0
+    missing_indexes: list[int] = []
     for message in messages:
-        normalized, patched, placeholder, missing = normalize_message(
+        normalized, patched, missing = normalize_message(
             message,
             store,
             normalized_messages,
             cache_namespace,
             repair_reasoning,
             keep_reasoning,
-            missing_reasoning_strategy,
         )
         normalized_messages.append(normalized)
         if patched:
             patched_count += 1
-        if placeholder:
-            placeholder_count += 1
         if missing:
-            missing_count += 1
-    return normalized_messages, patched_count, placeholder_count, missing_count
+            missing_indexes.append(len(normalized_messages) - 1)
+    return normalized_messages, patched_count, missing_indexes
+
+
+def has_recovery_notice(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return (
+        message.get("role") == "assistant"
+        and isinstance(content, str)
+        and content.startswith(RECOVERY_NOTICE_TEXT)
+    )
+
+
+def leading_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    leading_messages: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") == "system":
+            leading_messages.append(message)
+            continue
+        break
+    return leading_messages
+
+
+def recover_messages_from_missing_reasoning(
+    messages: list[dict[str, Any]],
+    missing_indexes: list[int],
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    recovery_boundary_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if has_recovery_notice(messages[index])
+            and any(missing_index < index for missing_index in missing_indexes)
+        ),
+        -1,
+    )
+    if recovery_boundary_index != -1:
+        context_user_index = next(
+            (
+                index
+                for index in range(recovery_boundary_index - 1, -1, -1)
+                if messages[index].get("role") == "user"
+            ),
+            -1,
+        )
+        leading_messages = leading_system_messages(messages)
+        recovered_tail = []
+        if context_user_index != -1:
+            recovered_tail.append(messages[context_user_index])
+        recovered_tail.extend(messages[recovery_boundary_index:])
+        recovered = [
+            *leading_messages,
+            {"role": "system", "content": RECOVERY_SYSTEM_CONTENT},
+            *recovered_tail,
+        ]
+        kept_context_messages = 1 if context_user_index != -1 else 0
+        omitted_messages = (
+            recovery_boundary_index - len(leading_messages) - kept_context_messages
+        )
+        return recovered, omitted_messages, None
+
+    last_user_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if messages[index].get("role") == "user"
+        ),
+        -1,
+    )
+    if last_user_index == -1:
+        return messages, 0, None
+
+    recovered = leading_system_messages(messages)
+    omitted_messages = len(messages) - len(recovered) - 1
+    recovered.append({"role": "system", "content": RECOVERY_SYSTEM_CONTENT})
+    recovered.append(messages[last_user_index])
+    return recovered, omitted_messages, RECOVERY_NOTICE_CONTENT
 
 
 def assistant_needs_reasoning_for_tool_context(
@@ -403,14 +471,33 @@ def prepare_upstream_request(
         prepared.get("reasoning_effort"),
         authorization,
     )
-    messages, patched_count, placeholder_count, missing_count = normalize_messages(
+    messages, patched_count, missing_indexes = normalize_messages(
         payload.get("messages"),
         store,
         cache_namespace,
         repair_reasoning=thinking_enabled,
         keep_reasoning=not thinking_disabled,
-        missing_reasoning_strategy=config.missing_reasoning_strategy,
     )
+    recovered_count = 0
+    recovery_dropped_messages = 0
+    recovery_notice = None
+    while missing_indexes and config.missing_reasoning_strategy == "recover":
+        recovered_messages, dropped_messages, notice = (
+            recover_messages_from_missing_reasoning(messages, missing_indexes)
+        )
+        if not dropped_messages:
+            break
+        recovered_count += len(missing_indexes)
+        recovery_dropped_messages += dropped_messages
+        if notice:
+            recovery_notice = notice
+        messages, patched_count, missing_indexes = normalize_messages(
+            recovered_messages,
+            store,
+            cache_namespace,
+            repair_reasoning=thinking_enabled,
+            keep_reasoning=not thinking_disabled,
+        )
     prepared["messages"] = messages
 
     return PreparedRequest(
@@ -419,8 +506,10 @@ def prepare_upstream_request(
         upstream_model=upstream_model,
         cache_namespace=cache_namespace,
         patched_reasoning_messages=patched_count,
-        placeholder_reasoning_messages=placeholder_count,
-        missing_reasoning_messages=missing_count,
+        missing_reasoning_messages=len(missing_indexes),
+        recovered_reasoning_messages=recovered_count,
+        recovery_dropped_messages=recovery_dropped_messages,
+        recovery_notice=recovery_notice,
     )
 
 
@@ -452,9 +541,12 @@ def rewrite_response_body(
     store: ReasoningStore | None,
     request_messages: list[dict[str, Any]],
     cache_namespace: str = "",
+    content_prefix: str | None = None,
 ) -> bytes:
     response_payload = json.loads(body.decode("utf-8"))
     if isinstance(response_payload, dict):
+        if content_prefix:
+            prefix_response_content(response_payload, content_prefix)
         record_response_reasoning(
             response_payload, store, request_messages, cache_namespace
         )
@@ -463,3 +555,19 @@ def rewrite_response_body(
     return json.dumps(
         response_payload, ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
+
+
+def prefix_response_content(response_payload: dict[str, Any], prefix: str) -> bool:
+    choices = response_payload.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        message["content"] = prefix + (content if isinstance(content, str) else "")
+        return True
+    return False

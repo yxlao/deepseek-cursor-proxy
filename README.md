@@ -4,7 +4,7 @@ Compatibility proxy connecting Cursor to DeepSeek thinking models (`deepseek-v4-
 
 ## What It Does
 
-- ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it. If the exact original reasoning is unavailable, the proxy fails closed instead of sending a fake placeholder. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
+- ✅ Caches DeepSeek `reasoning_content` from regular and streamed responses, then restores it on later tool-call turns when Cursor omits it. If old or mixed-model chat history cannot be repaired exactly, the proxy can recover by continuing from recent context and showing a small Cursor-visible notice. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
 - ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text so that thinking tokens are shown in Cursor's UI. For BYOK/proxy mode, Cursor renders this as normal text, not as a native collapsible thinking block.
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy through a public HTTPS URL.
 - ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
@@ -129,7 +129,7 @@ Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.
 
 DeepSeek's [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) requires `reasoning_content` from assistant messages in tool-call sequences to be passed back in later requests. Cursor may omit this field, causing DeepSeek to return a 400 error. This proxy sits between Cursor and DeepSeek (`Cursor → ngrok → proxy → DeepSeek API`) and repairs requests when it has the exact original reasoning cached.
 
-- Core fix: every DeepSeek response, streaming or non-streaming, has its `reasoning_content` stored in a local SQLite cache keyed by message signature, tool-call ID, and tool-call function signature. On outgoing thinking-mode requests, the proxy restores missing `reasoning_content` for tool-call-related assistant messages and sends the complete history to DeepSeek. If the cache is cold, such as after a proxy restart, it returns a local error instead of fabricating reasoning.
+- Core fix: every DeepSeek response, streaming or non-streaming, has its `reasoning_content` stored in a local SQLite cache keyed by message signature, tool-call ID, and tool-call function signature. On outgoing thinking-mode requests, the proxy restores missing `reasoning_content` for tool-call-related assistant messages and sends the complete history to DeepSeek. If the cache is cold, such as after a proxy restart or model switch, the default recovery mode omits older unrecoverable tool-call history, continues from the latest user request, logs the recovery, and prefixes the next Cursor response with a small notice.
 - Multi-conversation isolation: cache keys are scoped by a SHA-256 hash of the canonical conversation prefix (roles, content, tool calls, excluding `reasoning_content`) plus the upstream model/configuration and an API-key hash. Concurrent or interleaved threads with different histories get different scopes, so reused tool-call IDs do not collide. Byte-identical cloned histories are indistinguishable unless Cursor sends a differentiating history.
 - DeepSeek [prefix caching](https://api-docs.deepseek.com/guides/kv_cache) compatibility: the proxy does not inject synthetic thread IDs, timestamps, or cache-control messages into the prompt. When it restores cached reasoning, it restores the exact original string, preserving repeated prefixes for DeepSeek's automatic best-effort context cache.
 - Additional compatibility fixes: the proxy converts legacy `functions`/`function_call` fields to `tools`/`tool_choice`, preserves required and named tool-choice semantics, normalizes `reasoning_effort` aliases per DeepSeek docs, strips mirrored `<think>` blocks from assistant content, converts multi-part content arrays to plain text, logs DeepSeek prompt-cache usage when available, and mirrors `reasoning_content` into Cursor-visible `<think>...</think>` blocks for thinking display.
@@ -150,15 +150,19 @@ Run without ngrok for local curl testing:
 PROXY_NGROK=false deepseek-cursor-proxy --port 9000 --verbose
 ```
 
-If Cursor shows `missing_reasoning_content`, the current chat contains thinking-mode tool-call history whose original DeepSeek `reasoning_content` is not in the local cache. This commonly happens when continuing an older chat after a proxy restart, cache clear, or cache format/config change. The local 409 response includes a diagnostic placeholder so the cause is visible, but that placeholder is not forwarded to DeepSeek in the default safe mode. Start a new chat, or retry from the original tool-call turn while the proxy is running so it can capture the reasoning.
+If Cursor shows `missing_reasoning_content`, the current chat contains thinking-mode tool-call history whose original DeepSeek `reasoning_content` is not in the local cache. This commonly happens when continuing an older chat after a proxy restart, cache clear, cache format/config change, or switching from another model into DeepSeek. The default `recover` mode avoids hard failure by dropping older unrecoverable tool-call history, forwarding the latest user request with a system recovery note, logging what happened, and prefixing the next assistant response with:
 
-For debugging an old Cursor history, you can opt into a non-compliant compatibility fallback:
-
-```bash
-deepseek-cursor-proxy --verbose --missing-reasoning-strategy placeholder
+```text
+Note: recovered this DeepSeek chat with recent context only.
 ```
 
-This inserts a loud placeholder into missing `reasoning_content` fields and forwards the request. It may still be rejected by DeepSeek and should not be used for normal work.
+If your `~/.deepseek-cursor-proxy/config.yaml` was generated by an older version, change `missing_reasoning_strategy: reject` to `missing_reasoning_strategy: recover`, or pass `--missing-reasoning-strategy recover`.
+
+For strict DeepSeek API behavior, reject unrecoverable histories instead:
+
+```bash
+deepseek-cursor-proxy --verbose --missing-reasoning-strategy reject
+```
 
 Use another config file:
 

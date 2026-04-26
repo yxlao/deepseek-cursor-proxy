@@ -4,9 +4,13 @@ import json
 import unittest
 
 from deepseek_cursor_proxy.config import ProxyConfig
-from deepseek_cursor_proxy.reasoning_store import ReasoningStore, conversation_scope
+from deepseek_cursor_proxy.reasoning_store import (
+    ReasoningStore,
+    conversation_scope,
+    message_signature,
+)
 from deepseek_cursor_proxy.transform import (
-    PLACEHOLDER_REASONING_CONTENT,
+    RECOVERY_NOTICE_CONTENT,
     extract_text_content,
     prepare_upstream_request,
     reasoning_cache_namespace,
@@ -72,7 +76,11 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
+        prepared = prepare_upstream_request(
+            payload,
+            ProxyConfig(missing_reasoning_strategy="reject"),
+            self.store,
+        )
 
         self.assertEqual(prepared.payload["messages"][1]["content"], "Visible answer.")
 
@@ -135,7 +143,11 @@ class TransformTests(unittest.TestCase):
             "tool_choice": "required",
         }
 
-        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
+        prepared = prepare_upstream_request(
+            payload,
+            ProxyConfig(missing_reasoning_strategy="reject"),
+            self.store,
+        )
 
         self.assertEqual(prepared.payload["tool_choice"], "required")
 
@@ -201,7 +213,11 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
+        prepared = prepare_upstream_request(
+            payload,
+            ProxyConfig(missing_reasoning_strategy="reject"),
+            self.store,
+        )
 
         self.assertEqual(prepared.patched_reasoning_messages, 1)
         self.assertEqual(
@@ -339,7 +355,11 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
+        prepared = prepare_upstream_request(
+            payload,
+            ProxyConfig(missing_reasoning_strategy="reject"),
+            self.store,
+        )
 
         self.assertEqual(prepared.patched_reasoning_messages, 1)
         self.assertEqual(
@@ -572,16 +592,21 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
+        prepared = prepare_upstream_request(
+            payload,
+            ProxyConfig(missing_reasoning_strategy="reject"),
+            self.store,
+        )
 
         self.assertEqual(prepared.patched_reasoning_messages, 0)
         self.assertEqual(prepared.missing_reasoning_messages, 1)
         self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
 
-    def test_can_insert_placeholder_for_uncached_assistant_tool_call(self) -> None:
+    def test_can_recover_uncached_tool_history_from_latest_user(self) -> None:
         payload = {
             "model": "deepseek-v4-pro",
             "messages": [
+                {"role": "system", "content": "Follow project rules."},
                 {"role": "user", "content": "read README"},
                 {
                     "role": "assistant",
@@ -602,21 +627,133 @@ class TransformTests(unittest.TestCase):
                     "tool_call_id": "call_uncached",
                     "content": "file text",
                 },
+                {"role": "user", "content": "continue with the summary"},
             ],
         }
 
         prepared = prepare_upstream_request(
             payload,
-            ProxyConfig(missing_reasoning_strategy="placeholder"),
+            ProxyConfig(missing_reasoning_strategy="recover"),
             self.store,
         )
 
-        self.assertEqual(prepared.patched_reasoning_messages, 0)
-        self.assertEqual(prepared.placeholder_reasoning_messages, 1)
         self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(prepared.recovered_reasoning_messages, 1)
+        self.assertEqual(prepared.recovery_dropped_messages, 3)
+        self.assertEqual(prepared.recovery_notice, RECOVERY_NOTICE_CONTENT)
         self.assertEqual(
-            prepared.payload["messages"][1]["reasoning_content"],
-            PLACEHOLDER_REASONING_CONTENT,
+            [message["role"] for message in prepared.payload["messages"]],
+            ["system", "system", "user"],
+        )
+        self.assertIn(
+            "recovered this request", prepared.payload["messages"][1]["content"]
+        )
+        self.assertEqual(
+            prepared.payload["messages"][2],
+            {"role": "user", "content": "continue with the summary"},
+        )
+
+    def test_recovery_boundary_preserves_later_deepseek_tool_context(self) -> None:
+        old_tool_call = {
+            "id": "call_old",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"README.md"}',
+            },
+        }
+        new_tool_call = {
+            "id": "call_new",
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "arguments": '{"query":"new"}',
+            },
+        }
+        first_recovered = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    {"role": "user", "content": "old model turn"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [old_tool_call],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_old",
+                        "content": "old result",
+                    },
+                    {"role": "user", "content": "continue with DeepSeek"},
+                ],
+            },
+            ProxyConfig(missing_reasoning_strategy="recover"),
+            self.store,
+        )
+        recovered_tool_message = {
+            "role": "assistant",
+            "content": RECOVERY_NOTICE_CONTENT,
+            "reasoning_content": "Need the new lookup.",
+            "tool_calls": [new_tool_call],
+        }
+        self.store.store_assistant_message(
+            recovered_tool_message,
+            conversation_scope(
+                first_recovered.payload["messages"],
+                first_recovered.cache_namespace,
+            ),
+        )
+
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    {"role": "user", "content": "old model turn"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [old_tool_call],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_old",
+                        "content": "old result",
+                    },
+                    {"role": "user", "content": "continue with DeepSeek"},
+                    {
+                        "role": "assistant",
+                        "content": RECOVERY_NOTICE_CONTENT,
+                        "tool_calls": [new_tool_call],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_new",
+                        "content": "new result",
+                    },
+                ],
+            },
+            ProxyConfig(missing_reasoning_strategy="recover"),
+            self.store,
+        )
+
+        self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertIsNone(prepared.recovery_notice)
+        self.assertEqual(
+            [message["role"] for message in prepared.payload["messages"]],
+            ["system", "user", "assistant", "tool"],
+        )
+        self.assertEqual(
+            prepared.payload["messages"][2]["reasoning_content"],
+            "Need the new lookup.",
+        )
+        self.assertEqual(
+            prepared.payload["messages"][3],
+            {
+                "role": "tool",
+                "tool_call_id": "call_new",
+                "content": "new result",
+            },
         )
 
     def test_reports_missing_reasoning_for_uncached_assistant_after_tool_result(
@@ -651,7 +788,11 @@ class TransformTests(unittest.TestCase):
             ],
         }
 
-        prepared = prepare_upstream_request(payload, ProxyConfig(), self.store)
+        prepared = prepare_upstream_request(
+            payload,
+            ProxyConfig(missing_reasoning_strategy="reject"),
+            self.store,
+        )
 
         self.assertEqual(prepared.missing_reasoning_messages, 1)
         self.assertNotIn("reasoning_content", prepared.payload["messages"][3])
@@ -707,7 +848,7 @@ class TransformTests(unittest.TestCase):
         self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
 
     def test_reasoning_cache_is_namespaced_by_authorization(self) -> None:
-        config = ProxyConfig()
+        config = ProxyConfig(missing_reasoning_strategy="reject")
         prior = [{"role": "user", "content": "read README"}]
         namespace_a = reasoning_cache_namespace(
             config,
@@ -812,6 +953,58 @@ class TransformTests(unittest.TestCase):
                 f"scope:{conversation_scope(request_messages)}:tool_call:call_abc"
             ),
             "I need to inspect the repo.",
+        )
+
+    def test_rewrite_response_can_prefix_recovery_notice_before_storing(
+        self,
+    ) -> None:
+        body = json.dumps(
+            {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": "deepseek-v4-pro",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": "Summary.",
+                            "reasoning_content": "Tool result is enough.",
+                        },
+                    }
+                ],
+            }
+        ).encode()
+
+        request_messages = [
+            {"role": "user", "content": "read README"},
+            {"role": "tool", "tool_call_id": "call_abc", "content": "file text"},
+        ]
+        rewritten = rewrite_response_body(
+            body,
+            "deepseek-v4-pro",
+            self.store,
+            request_messages,
+            content_prefix=RECOVERY_NOTICE_CONTENT,
+        )
+        payload = json.loads(rewritten)
+        stored_message = {
+            "role": "assistant",
+            "content": RECOVERY_NOTICE_CONTENT + "Summary.",
+            "reasoning_content": "Tool result is enough.",
+        }
+
+        self.assertEqual(
+            payload["choices"][0]["message"]["content"],
+            RECOVERY_NOTICE_CONTENT + "Summary.",
+        )
+        self.assertEqual(
+            self.store.get(
+                f"scope:{conversation_scope(request_messages)}:signature:"
+                f"{message_signature(stored_message)}"
+            ),
+            "Tool result is enough.",
         )
 
     def test_rewrite_response_preserves_prompt_cache_usage_fields(self) -> None:

@@ -17,7 +17,7 @@ from deepseek_cursor_proxy.reasoning_store import (
 )
 from deepseek_cursor_proxy.server import DeepSeekProxyHandler, DeepSeekProxyServer
 from deepseek_cursor_proxy.transform import (
-    PLACEHOLDER_REASONING_CONTENT,
+    RECOVERY_NOTICE_CONTENT,
     reasoning_cache_namespace,
 )
 
@@ -626,9 +626,14 @@ class ProxyEndToEndTests(unittest.TestCase):
         self.assertIn("too large", payload["error"]["message"])
         self.assertEqual(FakeDeepSeekHandler.requests, [])
 
-    def test_proxy_rejects_uncached_cursor_tool_history_without_placeholder(
+    def test_proxy_rejects_uncached_cursor_tool_history_in_strict_mode(
         self,
     ) -> None:
+        self.proxy.server.config = replace(
+            self.proxy.server.config,
+            missing_reasoning_strategy="reject",
+        )
+
         status, payload = post_json(
             f"{self.proxy.url}/v1/chat/completions",
             second_cursor_request(include_reasoning=False),
@@ -637,29 +642,75 @@ class ProxyEndToEndTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"]["missing_reasoning_messages"], 1)
         self.assertIn("1 assistant message", payload["error"]["message"])
-        self.assertIn(
-            "not sent upstream",
-            payload["error"]["diagnostic_placeholder"],
-        )
         self.assertEqual(FakeDeepSeekHandler.requests, [])
 
-    def test_proxy_can_forward_placeholder_for_uncached_cursor_tool_history(
-        self,
-    ) -> None:
-        self.proxy.server.config = replace(
-            self.proxy.server.config,
-            missing_reasoning_strategy="placeholder",
-        )
-
-        status, _ = post_json(
-            f"{self.proxy.url}/v1/chat/completions",
-            second_cursor_request(include_reasoning=False),
-        )
+    def test_proxy_recovers_uncached_cursor_tool_history(self) -> None:
+        with self.assertLogs("deepseek_cursor_proxy", level="WARNING") as captured:
+            status, payload = post_json(
+                f"{self.proxy.url}/v1/chat/completions",
+                third_cursor_request_missing_all_reasoning(),
+            )
 
         self.assertEqual(status, 200)
+        self.assertTrue(
+            payload["choices"][0]["message"]["content"].startswith(
+                RECOVERY_NOTICE_CONTENT
+            )
+        )
         self.assertEqual(
-            FakeDeepSeekHandler.requests[0]["messages"][1]["reasoning_content"],
-            PLACEHOLDER_REASONING_CONTENT,
+            [
+                message["role"]
+                for message in FakeDeepSeekHandler.requests[0]["messages"]
+            ],
+            ["system", "user"],
+        )
+        self.assertIn(
+            "recovered this request",
+            FakeDeepSeekHandler.requests[0]["messages"][0]["content"],
+        )
+        self.assertEqual(
+            FakeDeepSeekHandler.requests[0]["messages"][1],
+            {"role": "user", "content": "Thanks, now continue."},
+        )
+        self.assertIn(
+            "recovered request with missing reasoning_content",
+            "\n".join(captured.output),
+        )
+
+    def test_proxy_keeps_deepseek_context_after_recovery_boundary(self) -> None:
+        status, first = post_json(
+            f"{self.proxy.url}/v1/chat/completions",
+            third_cursor_request_missing_all_reasoning(),
+        )
+        self.assertEqual(status, 200)
+
+        recovered_assistant = dict(first["choices"][0]["message"])
+        recovered_assistant.pop("reasoning_content", None)
+        payload = third_cursor_request_missing_all_reasoning()
+        payload["messages"].append(recovered_assistant)
+        payload["messages"].append(
+            {
+                "role": "tool",
+                "tool_call_id": "call_date",
+                "content": "2026-04-24",
+            }
+        )
+
+        status, second = post_json(f"{self.proxy.url}/v1/chat/completions", payload)
+
+        self.assertEqual(status, 200)
+        self.assertFalse(
+            second["choices"][0]["message"]["content"].startswith(
+                RECOVERY_NOTICE_CONTENT
+            )
+        )
+        second_upstream_messages = FakeDeepSeekHandler.requests[1]["messages"]
+        self.assertEqual(
+            [message["role"] for message in second_upstream_messages],
+            ["system", "user", "assistant", "tool"],
+        )
+        self.assertEqual(
+            second_upstream_messages[2]["reasoning_content"], TOOL_REASONING
         )
 
 
@@ -891,6 +942,32 @@ class ReasoningStreamingProxyTests(unittest.TestCase):
                 + message_signature(stored_message)
             ),
             "Need context.",
+        )
+
+    def test_streaming_recovery_notice_is_visible_in_cursor_content(self) -> None:
+        payload = third_cursor_request_missing_all_reasoning()
+        payload["stream"] = True
+        request = Request(
+            f"{self.proxy.url}/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": "Bearer sk-cursor-test",
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urlopen(request, timeout=2) as response:
+            body = response.read().decode("utf-8")
+
+        chunks = [
+            json.loads(line.removeprefix("data: "))
+            for line in body.splitlines()
+            if line.startswith("data: {")
+        ]
+        self.assertEqual(
+            chunks[2]["choices"][0]["delta"]["content"],
+            "\n</think>\n\n" + RECOVERY_NOTICE_CONTENT + FINAL_CONTENT,
         )
 
 
