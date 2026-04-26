@@ -65,7 +65,7 @@ For example, if ngrok dashboard shows `https://example.ngrok-free.app`, use:
 https://example.ngrok-free.app/v1
 ```
 
-<img src="assets/cursor_config.png" width="720" alt="Cursor settings for DeepSeek through the proxy">
+<img src="assets/cursor_config.png" width="600" alt="Cursor settings for DeepSeek through the proxy">
 
 Note: you can toggle the custom API on and off with:
 
