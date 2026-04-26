@@ -15,7 +15,7 @@ This proxy can also help *other applications and coding agents* beyond Cursor th
 
 This repository fixes the following Cursor + DeepSeek tool-call error with thinking mode enabled:
 
-![Error 400 - reasoning_content must be passed back](assets/error_400.png)
+<img src="assets/error_400.png" width="600" alt="Error 400 - reasoning_content must be passed back">
 
 ```txt
 ⚠️ Connection Error
@@ -36,11 +36,11 @@ Provider returned error:
 
 Cursor blocks non-public API URLs such as `localhost`, so the proxy needs a public HTTPS URL. [ngrok](https://ngrok.com/) can expose the local proxy to Cursor without opening router ports. Alternatively, you may use [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/).
 
-If you're using this proxy with another application that allows localhost API endpoints, you can skip this step entirely by setting `PROXY_NGROK=false`.
+If you're using this proxy with another application that allows localhost API endpoints, you can skip this step entirely by setting `ngrok: false` in `~/.deepseek-cursor-proxy/config.yaml`, or by starting the proxy with `--no-ngrok`.
 
 Create an ngrok account, then visit ngrok's dashboard: https://dashboard.ngrok.com
 
-<img src="assets/ngrok_dashboard.png" width="420" alt="ngrok dashboard">
+<img src="assets/ngrok_dashboard.png" width="600" alt="ngrok dashboard">
 
 Then, install and authenticate ngrok once:
 
@@ -104,12 +104,14 @@ pip install -e .
 deepseek-cursor-proxy
 ```
 
-On start, `deepseek-cursor-proxy` will print the ngrok public URL. If it differs from the one in Cursor, update it in Cursor's Base URL field.
+When ngrok is enabled, `deepseek-cursor-proxy` will print the ngrok public URL on start. If it differs from the one in Cursor, update it in Cursor's Base URL field.
 
 On the first run, `deepseek-cursor-proxy` will create:
 
 - `~/.deepseek-cursor-proxy/config.yaml`: the configuration file
 - `~/.deepseek-cursor-proxy/reasoning_content.sqlite3`: the reasoning content cache
+
+Persistent settings live in `~/.deepseek-cursor-proxy/config.yaml`. Command-line flags override the config for a single run, for example `--no-ngrok`, `--port 9000`, or `--verbose`.
 
 ### Step 4: Chat with DeepSeek in Cursor
 
@@ -139,7 +141,7 @@ deepseek-cursor-proxy --verbose
 Run without ngrok for local curl testing:
 
 ```bash
-PROXY_NGROK=false deepseek-cursor-proxy --port 9000 --verbose
+deepseek-cursor-proxy --no-ngrok --port 9000 --verbose
 ```
 
 Use another config file:
