@@ -1,4 +1,4 @@
-<h1><img src="assets/logo.png" width="81" alt="deepseek-cursor-proxy logo" style="vertical-align: middle;">&nbsp;&nbsp; DeepSeek Cursor Proxy</h1>
+<h1><img src="assets/logo.png" width="81" alt="deepseek-cursor-proxy logo" style="vertical-align: middle;">&nbsp; DeepSeek Cursor Proxy</h1>
 
 A compatibility proxy that connects Cursor to DeepSeek thinking models (`deepseek-v4-pro` and `deepseek-v4-flash`) by properly handling the `reasoning_content` field for DeepSeek tool-call reasoning API requests.
 
