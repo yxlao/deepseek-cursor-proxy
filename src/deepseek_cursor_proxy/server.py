@@ -64,9 +64,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 request_path,
                 self.client_address[0],
             )
-        self.send_response(204)
-        self._send_cors_headers()
-        self.end_headers()
+        self._send_response_headers(204, [], "sending CORS preflight response")
 
     def do_GET(self) -> None:
         request_path = urlparse(self.path).path
@@ -249,19 +247,21 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     elapsed_ms(started),
                 )
             if prepared.payload.get("stream"):
-                self._proxy_streaming_response(
+                sent_response = self._proxy_streaming_response(
                     response,
                     prepared.original_model,
                     prepared.payload["messages"],
                     prepared.cache_namespace,
                 )
             else:
-                self._proxy_regular_response(
+                sent_response = self._proxy_regular_response(
                     response,
                     prepared.original_model,
                     prepared.payload["messages"],
                     prepared.cache_namespace,
                 )
+            if not sent_response:
+                return
             LOG.info(
                 (
                     "request complete status=%s stream=%s elapsed_ms=%s "
@@ -297,15 +297,49 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
+        sent_headers = self._send_response_headers(
+            status,
+            [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(body))),
+            ],
+            "sending JSON response headers",
+        )
+        if sent_headers:
+            self._write_to_client(body, "sending JSON response body")
+
+    def _send_response_headers(
+        self,
+        status: int,
+        headers: list[tuple[str, str]],
+        disconnect_context: str,
+    ) -> bool:
         try:
             self.send_response(status)
             self._send_cors_headers()
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
+            for name, value in headers:
+                self.send_header(name, value)
             self.end_headers()
-            self.wfile.write(body)
         except (BrokenPipeError, ConnectionError) as exc:
-            LOG.warning("client disconnected before response could be sent: %s", exc)
+            LOG.warning("client disconnected while %s: %s", disconnect_context, exc)
+            return False
+        return True
+
+    def _write_to_client(
+        self,
+        body: bytes,
+        disconnect_context: str,
+        *,
+        flush: bool = False,
+    ) -> bool:
+        try:
+            self.wfile.write(body)
+            if flush:
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionError) as exc:
+            LOG.warning("client disconnected while %s: %s", disconnect_context, exc)
+            return False
+        return True
 
     def _send_models(self) -> None:
         created = int(time.time())
@@ -368,17 +402,16 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         body = read_response_body(exc)
         if self.config.verbose:
             log_bytes("upstream error body", body)
-        try:
-            self.send_response(exc.code)
-            self._send_cors_headers()
-            self.send_header(
-                "Content-Type", exc.headers.get("Content-Type", "application/json")
-            )
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionError) as write_err:
-            LOG.warning("client disconnected before upstream error could be sent: %s", write_err)
+        sent_headers = self._send_response_headers(
+            exc.code,
+            [
+                ("Content-Type", exc.headers.get("Content-Type", "application/json")),
+                ("Content-Length", str(len(body))),
+            ],
+            "sending upstream error headers",
+        )
+        if sent_headers:
+            self._write_to_client(body, "sending upstream error body")
 
     def _proxy_regular_response(
         self,
@@ -386,7 +419,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         original_model: str,
         request_messages: list[dict[str, Any]],
         cache_namespace: str,
-    ) -> None:
+    ) -> bool:
         body = read_response_body(response)
         try:
             body = rewrite_response_body(
@@ -403,14 +436,20 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         if self.config.verbose:
             log_bytes("cursor response body", body)
 
-        self.send_response(getattr(response, "status", 200))
-        self._send_cors_headers()
-        self.send_header(
-            "Content-Type", response.headers.get("Content-Type", "application/json")
+        sent_headers = self._send_response_headers(
+            getattr(response, "status", 200),
+            [
+                (
+                    "Content-Type",
+                    response.headers.get("Content-Type", "application/json"),
+                ),
+                ("Content-Length", str(len(body))),
+            ],
+            "sending upstream response headers",
         )
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        if not sent_headers:
+            return False
+        return self._write_to_client(body, "sending upstream response body")
 
     def _proxy_streaming_response(
         self,
@@ -418,13 +457,18 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         original_model: str,
         request_messages: list[dict[str, Any]],
         cache_namespace: str,
-    ) -> None:
-        self.send_response(getattr(response, "status", 200))
-        self._send_cors_headers()
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
+    ) -> bool:
+        sent_headers = self._send_response_headers(
+            getattr(response, "status", 200),
+            [
+                ("Content-Type", "text/event-stream"),
+                ("Cache-Control", "no-cache"),
+                ("Connection", "close"),
+            ],
+            "sending streaming response headers",
+        )
+        if not sent_headers:
+            return False
         self.close_connection = True
 
         accumulator = StreamAccumulator()
@@ -442,8 +486,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             rewritten, finalized = self._rewrite_sse_line(
                 line, original_model, accumulator, scope, display_adapter
             )
-            self.wfile.write(rewritten)
-            self.wfile.flush()
+            if not self._write_to_client(
+                rewritten, "sending streaming response chunk", flush=True
+            ):
+                return False
             if finalized:
                 break
 
@@ -453,6 +499,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             stored = accumulator.store_reasoning(self.reasoning_store, scope)
             if stored:
                 LOG.info("stored %s streaming reasoning cache key(s)", stored)
+        return True
 
     def _rewrite_sse_line(
         self,
