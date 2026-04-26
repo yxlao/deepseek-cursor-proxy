@@ -14,6 +14,23 @@ REASONING_CONTENT_FILE_NAME = "reasoning_content.sqlite3"
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
 MISSING = object()
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 9000
+DEFAULT_UPSTREAM_BASE_URL = "https://api.deepseek.com"
+DEFAULT_UPSTREAM_MODEL = "deepseek-v4-pro"
+DEFAULT_THINKING = "enabled"
+DEFAULT_REASONING_EFFORT = "high"
+DEFAULT_CURSOR_DISPLAY_REASONING = True
+DEFAULT_NGROK = True
+DEFAULT_VERBOSE = False
+DEFAULT_REQUEST_TIMEOUT = 300.0
+DEFAULT_MAX_REQUEST_BODY_BYTES = 20 * 1024 * 1024
+DEFAULT_CORS = False
+DEFAULT_MISSING_REASONING_STRATEGY = "recover"
+DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+DEFAULT_REASONING_CACHE_MAX_ROWS = 100_000
+
 DEFAULT_CONFIG_HEADER = (
     "# This file was created automatically at ~/.deepseek-cursor-proxy/config.yaml."
 )
@@ -22,24 +39,24 @@ DEFAULT_CONFIG_TEXT = f"""{DEFAULT_CONFIG_HEADER}
 
 # `model` is the fallback when a request has no model; Cursor's requested
 # DeepSeek model name is otherwise respected.
-base_url: https://api.deepseek.com
-model: deepseek-v4-pro
-thinking: enabled
-reasoning_effort: high
-display_reasoning: true
+base_url: {DEFAULT_UPSTREAM_BASE_URL}
+model: {DEFAULT_UPSTREAM_MODEL}
+thinking: {DEFAULT_THINKING}
+reasoning_effort: {DEFAULT_REASONING_EFFORT}
+display_reasoning: {str(DEFAULT_CURSOR_DISPLAY_REASONING).lower()}
 
-host: 127.0.0.1
-port: 9000
-ngrok: true
-verbose: false
-request_timeout: 300
-max_request_body_bytes: 20971520
-cors: false
+host: {DEFAULT_HOST}
+port: {DEFAULT_PORT}
+ngrok: {str(DEFAULT_NGROK).lower()}
+verbose: {str(DEFAULT_VERBOSE).lower()}
+request_timeout: {DEFAULT_REQUEST_TIMEOUT:g}
+max_request_body_bytes: {DEFAULT_MAX_REQUEST_BODY_BYTES}
+cors: {str(DEFAULT_CORS).lower()}
 
-reasoning_content_path: reasoning_content.sqlite3
-missing_reasoning_strategy: recover
-reasoning_cache_max_age_seconds: 604800
-reasoning_cache_max_rows: 10000
+reasoning_content_path: {REASONING_CONTENT_FILE_NAME}
+missing_reasoning_strategy: {DEFAULT_MISSING_REASONING_STRATEGY}
+reasoning_cache_max_age_seconds: {DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS}
+reasoning_cache_max_rows: {DEFAULT_REASONING_CACHE_MAX_ROWS}
 """
 
 
@@ -144,39 +161,39 @@ def settings_from_config(
 
 
 def normalize_thinking(value: Any) -> str:
-    thinking = as_str(value, "enabled").strip().lower()
+    thinking = as_str(value, DEFAULT_THINKING).strip().lower()
     if thinking in {"passthrough", "pass-through", "pass_through"}:
         return "pass-through"
     if thinking in {"enabled", "disabled"}:
         return thinking
-    return "enabled"
+    return DEFAULT_THINKING
 
 
 def normalize_missing_reasoning_strategy(value: Any) -> str:
-    strategy = as_str(value, "recover").strip().lower()
+    strategy = as_str(value, DEFAULT_MISSING_REASONING_STRATEGY).strip().lower()
     if strategy in {"recover", "reject"}:
         return strategy
-    return "recover"
+    return DEFAULT_MISSING_REASONING_STRATEGY
 
 
 @dataclass(frozen=True)
 class ProxyConfig:
-    host: str = "127.0.0.1"
-    port: int = 9000
-    upstream_base_url: str = "https://api.deepseek.com"
-    upstream_model: str = "deepseek-v4-pro"
-    thinking: str = "enabled"
-    reasoning_effort: str = "high"
-    request_timeout: float = 300.0
-    max_request_body_bytes: int = 20 * 1024 * 1024
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    upstream_base_url: str = DEFAULT_UPSTREAM_BASE_URL
+    upstream_model: str = DEFAULT_UPSTREAM_MODEL
+    thinking: str = DEFAULT_THINKING
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
+    max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES
     reasoning_content_path: Path = field(default_factory=default_reasoning_content_path)
-    missing_reasoning_strategy: str = "recover"
-    reasoning_cache_max_age_seconds: int = 7 * 24 * 60 * 60
-    reasoning_cache_max_rows: int = 10000
-    cursor_display_reasoning: bool = True
-    cors: bool = False
-    verbose: bool = False
-    ngrok: bool = False
+    missing_reasoning_strategy: str = DEFAULT_MISSING_REASONING_STRATEGY
+    reasoning_cache_max_age_seconds: int = DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS
+    reasoning_cache_max_rows: int = DEFAULT_REASONING_CACHE_MAX_ROWS
+    cursor_display_reasoning: bool = DEFAULT_CURSOR_DISPLAY_REASONING
+    cors: bool = DEFAULT_CORS
+    verbose: bool = DEFAULT_VERBOSE
+    ngrok: bool = DEFAULT_NGROK
 
     @classmethod
     def from_file(
@@ -189,32 +206,32 @@ class ProxyConfig:
         return cls(
             host=as_str(
                 setting_value(settings, "host"),
-                "127.0.0.1",
+                DEFAULT_HOST,
             ),
             port=as_int(
                 setting_value(settings, "port"),
-                9000,
+                DEFAULT_PORT,
             ),
             upstream_base_url=as_str(
                 setting_value(settings, "base_url"),
-                "https://api.deepseek.com",
+                DEFAULT_UPSTREAM_BASE_URL,
             ).rstrip("/"),
             upstream_model=as_str(
                 setting_value(settings, "model"),
-                "deepseek-v4-pro",
+                DEFAULT_UPSTREAM_MODEL,
             ),
             thinking=normalize_thinking(setting_value(settings, "thinking")),
             reasoning_effort=as_str(
                 setting_value(settings, "reasoning_effort"),
-                "high",
+                DEFAULT_REASONING_EFFORT,
             ),
             request_timeout=as_float(
                 setting_value(settings, "request_timeout"),
-                300.0,
+                DEFAULT_REQUEST_TIMEOUT,
             ),
             max_request_body_bytes=as_int(
                 setting_value(settings, "max_request_body_bytes"),
-                20 * 1024 * 1024,
+                DEFAULT_MAX_REQUEST_BODY_BYTES,
             ),
             reasoning_content_path=as_path(
                 setting_value(settings, "reasoning_content_path"),
@@ -226,26 +243,26 @@ class ProxyConfig:
             ),
             reasoning_cache_max_age_seconds=as_int(
                 setting_value(settings, "reasoning_cache_max_age_seconds"),
-                7 * 24 * 60 * 60,
+                DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS,
             ),
             reasoning_cache_max_rows=as_int(
                 setting_value(settings, "reasoning_cache_max_rows"),
-                10000,
+                DEFAULT_REASONING_CACHE_MAX_ROWS,
             ),
             cursor_display_reasoning=as_bool(
                 setting_value(settings, "display_reasoning"),
-                True,
+                DEFAULT_CURSOR_DISPLAY_REASONING,
             ),
             cors=as_bool(
                 setting_value(settings, "cors"),
-                False,
+                DEFAULT_CORS,
             ),
             verbose=as_bool(
                 setting_value(settings, "verbose"),
-                False,
+                DEFAULT_VERBOSE,
             ),
             ngrok=as_bool(
                 setting_value(settings, "ngrok"),
-                False,
+                DEFAULT_NGROK,
             ),
         )

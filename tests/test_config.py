@@ -8,6 +8,15 @@ import unittest
 from unittest.mock import patch
 
 from deepseek_cursor_proxy.config import (
+    DEFAULT_CONFIG_TEXT,
+    DEFAULT_MISSING_REASONING_STRATEGY,
+    DEFAULT_NGROK,
+    DEFAULT_PORT,
+    DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS,
+    DEFAULT_REASONING_CACHE_MAX_ROWS,
+    DEFAULT_THINKING,
+    DEFAULT_UPSTREAM_MODEL,
+    DEFAULT_VERBOSE,
     ProxyConfig,
     default_config_path,
     default_reasoning_content_path,
@@ -15,6 +24,16 @@ from deepseek_cursor_proxy.config import (
 
 
 class ConfigTests(unittest.TestCase):
+    def test_example_config_matches_default_config_text(self) -> None:
+        example_config_path = (
+            Path(__file__).resolve().parents[1] / "config.example.yaml"
+        )
+
+        self.assertEqual(
+            example_config_path.read_text(encoding="utf-8"),
+            DEFAULT_CONFIG_TEXT,
+        )
+
     def test_default_paths_live_in_visible_user_app_directory(self) -> None:
         home = Path("/tmp/home")
 
@@ -30,6 +49,7 @@ class ConfigTests(unittest.TestCase):
                 ProxyConfig().reasoning_content_path,
                 home / ".deepseek-cursor-proxy" / "reasoning_content.sqlite3",
             )
+            self.assertEqual(ProxyConfig().ngrok, DEFAULT_NGROK)
 
     def test_missing_default_config_file_is_populated(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -39,17 +59,37 @@ class ConfigTests(unittest.TestCase):
                 config = ProxyConfig.from_file(config_path=None)
                 config_path = default_config_path()
 
+            config_text = config_path.read_text(encoding="utf-8")
+
             self.assertTrue(config_path.exists())
+            self.assertIn(f"model: {DEFAULT_UPSTREAM_MODEL}", config_text)
             self.assertIn(
-                "model: deepseek-v4-pro", config_path.read_text(encoding="utf-8")
+                f"missing_reasoning_strategy: {DEFAULT_MISSING_REASONING_STRATEGY}",
+                config_text,
             )
             self.assertIn(
-                "missing_reasoning_strategy: recover",
-                config_path.read_text(encoding="utf-8"),
+                "reasoning_cache_max_age_seconds: "
+                f"{DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS}",
+                config_text,
             )
+            self.assertIn(
+                f"reasoning_cache_max_rows: {DEFAULT_REASONING_CACHE_MAX_ROWS}",
+                config_text,
+            )
+            self.assertIn(f"ngrok: {str(DEFAULT_NGROK).lower()}", config_text)
             self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
-            self.assertEqual(config.upstream_model, "deepseek-v4-pro")
-            self.assertEqual(config.missing_reasoning_strategy, "recover")
+            self.assertEqual(config.upstream_model, DEFAULT_UPSTREAM_MODEL)
+            self.assertEqual(config.ngrok, DEFAULT_NGROK)
+            self.assertEqual(
+                config.missing_reasoning_strategy, DEFAULT_MISSING_REASONING_STRATEGY
+            )
+            self.assertEqual(
+                config.reasoning_cache_max_age_seconds,
+                DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS,
+            )
+            self.assertEqual(
+                config.reasoning_cache_max_rows, DEFAULT_REASONING_CACHE_MAX_ROWS
+            )
 
     def test_missing_explicit_config_file_is_not_populated(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -58,7 +98,15 @@ class ConfigTests(unittest.TestCase):
             config = ProxyConfig.from_file(config_path=config_path)
 
             self.assertFalse(config_path.exists())
-            self.assertEqual(config.upstream_model, "deepseek-v4-pro")
+            self.assertEqual(config.upstream_model, DEFAULT_UPSTREAM_MODEL)
+            self.assertEqual(config.ngrok, DEFAULT_NGROK)
+            self.assertEqual(
+                config.reasoning_cache_max_age_seconds,
+                DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS,
+            )
+            self.assertEqual(
+                config.reasoning_cache_max_rows, DEFAULT_REASONING_CACHE_MAX_ROWS
+            )
 
     def test_loads_config_from_user_yaml_file(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -124,10 +172,13 @@ class ConfigTests(unittest.TestCase):
 
             config = ProxyConfig.from_file(config_path=config_path)
 
-        self.assertEqual(config.thinking, "enabled")
-        self.assertEqual(config.missing_reasoning_strategy, "recover")
-        self.assertEqual(config.port, 9000)
-        self.assertFalse(config.verbose)
+        self.assertEqual(config.thinking, DEFAULT_THINKING)
+        self.assertEqual(
+            config.missing_reasoning_strategy, DEFAULT_MISSING_REASONING_STRATEGY
+        )
+        self.assertEqual(config.port, DEFAULT_PORT)
+        self.assertEqual(config.ngrok, DEFAULT_NGROK)
+        self.assertEqual(config.verbose, DEFAULT_VERBOSE)
 
     def test_relative_reasoning_content_path_in_config_is_relative_to_config_file(
         self,

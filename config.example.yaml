@@ -19,5 +19,5 @@ cors: false
 
 reasoning_content_path: reasoning_content.sqlite3
 missing_reasoning_strategy: recover
-reasoning_cache_max_age_seconds: 604800
-reasoning_cache_max_rows: 10000
+reasoning_cache_max_age_seconds: 2592000
+reasoning_cache_max_rows: 100000
