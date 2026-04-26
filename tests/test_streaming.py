@@ -116,6 +116,75 @@ class StreamAccumulatorTests(unittest.TestCase):
         self.assertEqual(accumulator.store_reasoning(store, scope), 0)
         store.close()
 
+    def test_stores_tool_call_reasoning_before_finish_reason(self) -> None:
+        store = ReasoningStore(":memory:")
+        accumulator = StreamAccumulator()
+        accumulator.ingest_chunk(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": "Need a tool.",
+                        },
+                    }
+                ]
+            }
+        )
+        accumulator.ingest_chunk(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_stream",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"query"',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+
+        scope = conversation_scope([{"role": "user", "content": "lookup"}])
+        stored = accumulator.store_ready_reasoning(store, scope)
+
+        self.assertGreater(stored, 0)
+        self.assertEqual(
+            store.get(f"scope:{scope}:tool_call:call_stream"), "Need a tool."
+        )
+
+        accumulator.ingest_chunk(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": ':"README"}'},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertGreater(accumulator.store_ready_reasoning(store, scope), 0)
+        store.close()
+
     def test_stores_empty_reasoning_content_when_stream_field_is_present(
         self,
     ) -> None:

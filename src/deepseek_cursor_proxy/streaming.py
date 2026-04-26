@@ -35,7 +35,7 @@ class StreamingChoice:
 class StreamAccumulator:
     def __init__(self) -> None:
         self.choices: dict[int, StreamingChoice] = {}
-        self._stored_choices: set[int] = set()
+        self._stored_choices: dict[int, str] = {}
 
     def ingest_chunk(self, chunk: dict[str, Any]) -> None:
         choices = chunk.get("choices")
@@ -80,7 +80,16 @@ class StreamAccumulator:
         stored = 0
         for index, choice in self.choices.items():
             if choice.finish_reason is not None:
-                stored += self._store_choice(index, choice, store, scope)
+                stored += self._store_choice(index, choice, store, scope, "final")
+        return stored
+
+    def store_ready_reasoning(self, store: ReasoningStore, scope: str) -> int:
+        stored = 0
+        for index, choice in self.choices.items():
+            if choice.finish_reason is not None:
+                stored += self._store_choice(index, choice, store, scope, "final")
+            elif self._has_identified_tool_calls(choice):
+                stored += self._store_choice(index, choice, store, scope, "tool_call")
         return stored
 
     def messages(self) -> list[dict[str, Any]]:
@@ -131,13 +140,21 @@ class StreamAccumulator:
         choice: StreamingChoice,
         store: ReasoningStore,
         scope: str,
+        stage: str = "final",
     ) -> int:
-        if index in self._stored_choices:
+        stage_rank = {"tool_call": 1, "final": 2}
+        previous_stage = self._stored_choices.get(index)
+        if stage_rank.get(previous_stage or "", 0) >= stage_rank.get(stage, 0):
             return 0
         stored = store.store_assistant_message(choice.to_message(), scope)
         if stored:
-            self._stored_choices.add(index)
+            self._stored_choices[index] = stage
         return stored
+
+    def _has_identified_tool_calls(self, choice: StreamingChoice) -> bool:
+        if not choice.has_reasoning_content or not choice.tool_calls:
+            return False
+        return all(bool(tool_call.get("id")) for tool_call in choice.tool_calls)
 
 
 class CursorReasoningDisplayAdapter:

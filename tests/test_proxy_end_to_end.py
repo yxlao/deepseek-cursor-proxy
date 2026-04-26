@@ -313,6 +313,8 @@ class ToolCallStreamingBeforeDoneDeepSeekHandler(BaseHTTPRequestHandler):
             for chunk in chunks:
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
                 self.wfile.flush()
+                if chunk["choices"][0]["finish_reason"] is None:
+                    time.sleep(0.2)
             time.sleep(1)
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
@@ -946,6 +948,84 @@ class StreamingToolRaceProxyTests(unittest.TestCase):
                 line = response.readline().decode("utf-8")
                 self.assertNotEqual(line, "")
                 if '"finish_reason":"tool_calls"' in line:
+                    break
+
+            status, payload = post_json(
+                f"{self.proxy.url}/v1/chat/completions",
+                {
+                    "model": "deepseek-v4-pro",
+                    "messages": [
+                        *request_messages,
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_stream_tool",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": "call_stream_tool",
+                            "content": "tool result",
+                        },
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "parameters": {"type": "object", "properties": {}},
+                            },
+                        }
+                    ],
+                },
+            )
+            response.read()
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(
+            payload["choices"][0]["message"]["content"], "stream follow-up accepted"
+        )
+
+    def test_streaming_tool_reasoning_is_available_before_finish_reason(self) -> None:
+        request_messages = [{"role": "user", "content": "stream tool"}]
+        request = Request(
+            f"{self.proxy.url}/v1/chat/completions",
+            data=json.dumps(
+                {
+                    "model": "deepseek-v4-pro",
+                    "stream": True,
+                    "messages": request_messages,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "parameters": {"type": "object", "properties": {}},
+                            },
+                        }
+                    ],
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": "Bearer sk-cursor-test",
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urlopen(request, timeout=3) as response:
+            while True:
+                line = response.readline().decode("utf-8")
+                self.assertNotEqual(line, "")
+                if '"tool_calls"' in line:
                     break
 
             status, payload = post_json(

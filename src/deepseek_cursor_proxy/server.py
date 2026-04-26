@@ -534,7 +534,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
         if isinstance(chunk, dict):
             accumulator.ingest_chunk(chunk)
-            stored = accumulator.store_finished_reasoning(self.reasoning_store, scope)
+            stored = accumulator.store_ready_reasoning(self.reasoning_store, scope)
             if stored:
                 LOG.info("stored %s streaming reasoning cache key(s)", stored)
             log_usage(chunk.get("usage"))
