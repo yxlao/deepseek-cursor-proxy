@@ -40,7 +40,7 @@ If you're using this proxy with another application that allows localhost API en
 
 Create an ngrok account, then visit ngrok's dashboard: https://dashboard.ngrok.com
 
-![ngrok dashboard](assets/ngrok_dashboard.png)
+<img src="assets/ngrok_dashboard.png" width="420" alt="ngrok dashboard">
 
 Then, install and authenticate ngrok once:
 
