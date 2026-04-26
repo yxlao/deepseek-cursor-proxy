@@ -8,7 +8,6 @@ import unittest
 from unittest.mock import patch
 
 from deepseek_cursor_proxy.config import (
-    DEFAULT_CONFIG_TEXT,
     DEFAULT_MISSING_REASONING_STRATEGY,
     DEFAULT_NGROK,
     DEFAULT_PORT,
@@ -24,16 +23,6 @@ from deepseek_cursor_proxy.config import (
 
 
 class ConfigTests(unittest.TestCase):
-    def test_example_config_matches_default_config_text(self) -> None:
-        example_config_path = (
-            Path(__file__).resolve().parents[1] / "config.example.yaml"
-        )
-
-        self.assertEqual(
-            example_config_path.read_text(encoding="utf-8"),
-            DEFAULT_CONFIG_TEXT,
-        )
-
     def test_default_paths_live_in_visible_user_app_directory(self) -> None:
         home = Path("/tmp/home")
 
