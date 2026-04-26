@@ -160,7 +160,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 )
         if prepared.missing_reasoning_messages:
             LOG.warning(
-                "rejected request path=%s status=409 reason=missing_reasoning_content count=%s",
+                (
+                    "strict missing-reasoning mode rejected request path=%s "
+                    "status=409 reason=missing_reasoning_content count=%s"
+                ),
                 request_path,
                 prepared.missing_reasoning_messages,
             )
@@ -169,12 +172,15 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 {
                     "error": {
                         "message": (
-                            "Missing cached DeepSeek reasoning_content for a "
-                            f"thinking-mode tool-call history on "
+                            "deepseek-cursor-proxy is running in strict "
+                            "missing-reasoning mode and cannot automatically "
+                            "recover this thinking-mode tool-call history because "
+                            "cached DeepSeek reasoning_content is missing for "
                             f"{prepared.missing_reasoning_messages} assistant "
-                            "message(s). This usually means the chat has tool-call "
-                            "turns that were not captured by this proxy/cache. Start "
-                            "a new chat or retry from the original tool-call turn."
+                            "message(s). Restart without "
+                            "`--missing-reasoning-strategy reject`, or pass "
+                            "`--missing-reasoning-strategy recover`, so the proxy "
+                            "can recover from partial chat history automatically."
                         ),
                         "type": "missing_reasoning_content",
                         "code": "missing_reasoning_content",
@@ -644,7 +650,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["recover", "reject"],
         help=(
             "What to do when required reasoning_content is missing: "
-            "recover (friendly default) or reject (strict)"
+            "recover (friendly default) or reject (strict debugging mode)"
         ),
     )
     parser.add_argument(

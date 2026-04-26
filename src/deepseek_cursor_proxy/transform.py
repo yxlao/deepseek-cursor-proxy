@@ -68,6 +68,10 @@ CURSOR_THINKING_BLOCK_RE = re.compile(
 )
 
 RECOVERY_NOTICE_TEXT = (
+    "[deepseek-cursor-proxy] Recovered this DeepSeek chat because older "
+    "tool-call reasoning was unavailable; continuing with recent context only."
+)
+LEGACY_RECOVERY_NOTICE_TEXT = (
     "Note: recovered this DeepSeek chat because older tool-call reasoning "
     "was unavailable; continuing with recent context only."
 )
@@ -297,7 +301,7 @@ def has_recovery_notice(message: dict[str, Any]) -> bool:
     return (
         message.get("role") == "assistant"
         and isinstance(content, str)
-        and content.startswith(RECOVERY_NOTICE_TEXT)
+        and content.startswith((RECOVERY_NOTICE_TEXT, LEGACY_RECOVERY_NOTICE_TEXT))
     )
 
 

@@ -150,16 +150,24 @@ Run without ngrok for local curl testing:
 PROXY_NGROK=false deepseek-cursor-proxy --port 9000 --verbose
 ```
 
-If Cursor shows `missing_reasoning_content`, the current chat contains thinking-mode tool-call history whose original DeepSeek `reasoning_content` is not in the local cache. This commonly happens when continuing an older chat after a proxy restart, cache clear, cache format/config change, or switching from another model into DeepSeek. The default `recover` mode avoids hard failure by dropping older unrecoverable tool-call history, forwarding the latest user request with a system recovery note, logging what happened, and prefixing the next assistant response with:
+If the current chat contains thinking-mode tool-call history whose original DeepSeek `reasoning_content` is not in the local cache, the default `recover` mode avoids hard failure by dropping older unrecoverable tool-call history, forwarding the latest user request with a system recovery note, logging what happened, and prefixing the next assistant response with:
 
 ```text
-Note: recovered this DeepSeek chat because older tool-call reasoning was unavailable; continuing with recent context only.
+[deepseek-cursor-proxy] Recovered this DeepSeek chat because older tool-call reasoning was unavailable; continuing with recent context only.
 ```
+
+This commonly happens when continuing an older chat after a proxy restart, cache clear, cache format/config change, or switching from another model into DeepSeek. If you run strict debugging mode, the proxy returns `missing_reasoning_content` instead of recovering and the error message tells you to switch back to recover mode.
 
 The recovery strategy is not a config-file setting. For strict DeepSeek API behavior while debugging, pass the runtime flag:
 
 ```bash
 deepseek-cursor-proxy --verbose --missing-reasoning-strategy reject
+```
+
+To turn automatic recovery back on, restart without that flag or pass:
+
+```bash
+deepseek-cursor-proxy --verbose --missing-reasoning-strategy recover
 ```
 
 Use another config file:

@@ -642,6 +642,10 @@ class ProxyEndToEndTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"]["missing_reasoning_messages"], 1)
         self.assertIn("1 assistant message", payload["error"]["message"])
+        self.assertIn("strict missing-reasoning mode", payload["error"]["message"])
+        self.assertIn(
+            "--missing-reasoning-strategy recover", payload["error"]["message"]
+        )
         self.assertEqual(FakeDeepSeekHandler.requests, [])
 
     def test_proxy_recovers_uncached_cursor_tool_history(self) -> None:
