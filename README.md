@@ -34,11 +34,9 @@ Provider returned error:
 
 ### Step 1: Set Up ngrok
 
-Cursor blocks non-public API URLs such as `localhost`, so the proxy needs a public HTTPS URL. [ngrok](https://ngrok.com/) can expose the local proxy to Cursor without opening router ports. Alternatively, you may use [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/).
+Cursor blocks non-public API URLs such as `localhost`, so the proxy needs a public HTTPS URL. [ngrok](https://ngrok.com/) can expose the local proxy to Cursor without opening router ports. Alternatively, you may use [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/). To do this with ngrok, create an ngrok account, then visit [ngrok's dashboard](https://dashboard.ngrok.com). You will find the authtoken and public URL for ngrok.
 
 If you're using this proxy with another application that allows localhost API endpoints, you can skip this step entirely by setting `ngrok: false` in `~/.deepseek-cursor-proxy/config.yaml`, or by starting the proxy with `--no-ngrok`.
-
-Create an ngrok account, then visit ngrok's dashboard: https://dashboard.ngrok.com
 
 <img src="assets/ngrok_dashboard.png" width="600" alt="ngrok dashboard">
 
@@ -59,10 +57,10 @@ In Cursor, add the DeepSeek custom model and point it at this proxy:
 
 The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is used as a fallback only when a request does not include a model.
 
-For example, if ngrok dashboard shows `https://example.ngrok-free.app`, use:
+For example, if ngrok dashboard shows `https://example.ngrok-free.dev`, use:
 
 ```text
-https://example.ngrok-free.app/v1
+https://example.ngrok-free.dev/v1
 ```
 
 <img src="assets/cursor_config.png" width="600" alt="Cursor settings for DeepSeek through the proxy">
@@ -144,8 +142,6 @@ uv run pre-commit run --all-files
 ```
 
 ## Debugging
-
-Normal logs avoid request/response bodies but still print compact request and usage statistics. `rounds` is the number of user turns in the forwarded history, `reasoning` is the number and character size of `reasoning_content` fields sent to DeepSeek, and `cache=hit/miss` comes from DeepSeek's `usage.prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
 
 Run with verbose output:
 
