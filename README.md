@@ -128,6 +128,21 @@ DeepSeek's [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode#to
 - **DeepSeek [context caching](https://api-docs.deepseek.com/guides/kv_cache) compatibility:** the proxy does not inject synthetic thread IDs, timestamps, or cache-control messages into the prompt. When it restores cached reasoning, it restores the exact original string, preserving repeated prefixes for DeepSeek's automatic best-effort context cache.
 - **Additional compatibility fixes:** the proxy converts legacy `functions`/`function_call` fields to `tools`/`tool_choice`, preserves required and named tool-choice semantics, normalizes `reasoning_effort` aliases per DeepSeek docs, strips mirrored `<think>` blocks from assistant content, converts multi-part content arrays to plain text, logs DeepSeek prompt-cache usage when available, and mirrors `reasoning_content` into Cursor-visible `<think>...</think>` blocks for thinking display.
 
+## Development
+
+Run unit tests:
+
+```bash
+uv run python -m unittest discover -s tests
+```
+
+Run pre-commit hooks (code formatting and linting):
+
+```bash
+uv sync --dev
+uv run pre-commit run --all-files
+```
+
 ## Debugging
 
 Normal logs avoid request/response bodies but still print compact request and usage statistics. `rounds` is the number of user turns in the forwarded history, `reasoning` is the number and character size of `reasoning_content` fields sent to DeepSeek, and `cache=hit/miss` comes from DeepSeek's `usage.prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
@@ -154,10 +169,4 @@ Clear the local reasoning cache:
 
 ```bash
 deepseek-cursor-proxy --clear-reasoning-cache
-```
-
-Run tests:
-
-```bash
-PYTHONPATH=src python -m unittest discover -s tests
 ```
