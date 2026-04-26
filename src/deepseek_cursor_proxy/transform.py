@@ -67,13 +67,16 @@ CURSOR_THINKING_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
-RECOVERY_NOTICE_TEXT = "Note: recovered this DeepSeek chat with recent context only."
+RECOVERY_NOTICE_TEXT = (
+    "Note: recovered this DeepSeek chat because older tool-call reasoning "
+    "was unavailable; continuing with recent context only."
+)
 RECOVERY_NOTICE_CONTENT = f"{RECOVERY_NOTICE_TEXT}\n\n"
 RECOVERY_SYSTEM_CONTENT = (
     "deepseek-cursor-proxy recovered this request because older DeepSeek "
-    "thinking-mode tool-call reasoning_content was unavailable. Earlier chat "
-    "history was omitted; continue using only the remaining user request and "
-    "available context."
+    "thinking-mode tool-call reasoning_content was unavailable. Older "
+    "unrecoverable tool-call history was omitted; continue using only the "
+    "remaining recovered context."
 )
 
 

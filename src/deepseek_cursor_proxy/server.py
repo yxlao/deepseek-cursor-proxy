@@ -141,9 +141,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             if prepared.recovery_notice:
                 LOG.warning(
                     (
-                        "recovered request with missing reasoning_content on %s "
-                        "assistant message(s); omitted %s older message(s) and "
-                        "will show a Cursor notice"
+                        "recovered request because cached reasoning_content was "
+                        "unavailable for %s assistant message(s); omitted %s "
+                        "older message(s) from forwarded history and will show "
+                        "a Cursor notice"
                     ),
                     prepared.recovered_reasoning_messages,
                     prepared.recovery_dropped_messages,
