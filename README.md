@@ -70,37 +70,25 @@ Note: you can toggle the custom API on and off with:
 
 ### Step 3: Install and Start the Proxy Server
 
-**TL;DR Version**
-
-```bash
-# Install (activate your Python environment first)
-git clone https://github.com/yxlao/deepseek-cursor-proxy.git
-cd deepseek-cursor-proxy
-pip install -e .
-
-# Start
-deepseek-cursor-proxy
-```
-
-**Full Instructions with UV**
+**Run with UV**
 
 ```bash
 # Install uv if you don't have it
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install
+# Install and start
+# uv installs the program in .venv/ under the repo local folder
 git clone https://github.com/yxlao/deepseek-cursor-proxy.git
 cd deepseek-cursor-proxy
-uv sync
-source .venv/bin/activate
-
-# Start
-deepseek-cursor-proxy
+uv run deepseek-cursor-proxy
 ```
 
-**Full Instructions with Conda**
+**Run with Conda**
 
 ```bash
+# Install conda if you don't have it
+# Follow: https://www.anaconda.com/docs/getting-started/miniconda/install/overview
+
 # Install
 conda create -n dcp python=3.10 -y
 conda activate dcp
