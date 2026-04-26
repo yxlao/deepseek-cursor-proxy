@@ -297,12 +297,15 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
-        self.send_response(status)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionError) as exc:
+            LOG.warning("client disconnected before response could be sent: %s", exc)
 
     def _send_models(self) -> None:
         created = int(time.time())
@@ -365,14 +368,17 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         body = read_response_body(exc)
         if self.config.verbose:
             log_bytes("upstream error body", body)
-        self.send_response(exc.code)
-        self._send_cors_headers()
-        self.send_header(
-            "Content-Type", exc.headers.get("Content-Type", "application/json")
-        )
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(exc.code)
+            self._send_cors_headers()
+            self.send_header(
+                "Content-Type", exc.headers.get("Content-Type", "application/json")
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionError) as write_err:
+            LOG.warning("client disconnected before upstream error could be sent: %s", write_err)
 
     def _proxy_regular_response(
         self,
