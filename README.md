@@ -8,7 +8,7 @@ This proxy can also help **other applications and coding agents** beyond Cursor 
 ## What It Does
 
 - ✅ Injects `reasoning_content` into outgoing tool-call requests since Cursor does not include the field, restoring previously cached reasoning from regular and streamed DeepSeek responses. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
-- ✅ Mirrors streamed `reasoning_content` into Cursor-visible `<think>...</think>` text so that thinking tokens are shown in Cursor UI. For BYOK (bring your own key) mode, Cursor renders this as normal text, not as a native collapsible thinking block.
+- ✅ Displays DeepSeek's thinking tokens in Cursor by forwarding them into Cursor-visible `<think>...</think>` blocks. In BYOK (bring your own key) mode, Cursor renders these thinking blocks as plain text instead of a native collapsible thinking view. You can disable thinking token display with `--no-display-reasoning` or setting `display_reasoning: false` in the config file.
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy through a public HTTPS URL.
 - ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
 
@@ -110,7 +110,21 @@ On the first run, `deepseek-cursor-proxy` will create:
 - `~/.deepseek-cursor-proxy/config.yaml`: the configuration file
 - `~/.deepseek-cursor-proxy/reasoning_content.sqlite3`: the reasoning content cache
 
-Persistent settings live in `~/.deepseek-cursor-proxy/config.yaml`. Command-line flags override the config for a single run, for example `--no-ngrok`, `--port 9000`, or `--verbose`.
+Persistent settings live in `~/.deepseek-cursor-proxy/config.yaml`. You can also override the config with command-line flags, for example:
+
+```bash
+# Hide thinking tokens displaying in Cursor UI
+deepseek-cursor-proxy --no-display-reasoning
+
+# Show full incoming and outgoing requests
+deepseek-cursor-proxy --verbose
+
+# Run without ngrok (run on localhost directly)
+deepseek-cursor-proxy --no-ngrok
+
+# Use a different local port
+deepseek-cursor-proxy --port 9000
+```
 
 ### Step 4: Chat with DeepSeek in Cursor
 
