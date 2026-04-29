@@ -9,7 +9,6 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
-import threading
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -51,19 +50,6 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     config: ProxyConfig
     reasoning_store: ReasoningStore
     trace_writer: TraceWriter | None
-    _request_log_lock: threading.Lock
-    _next_request_log_index: int
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._request_log_lock = threading.Lock()
-        self._next_request_log_index = 1
-
-    def next_request_log_index(self) -> int:
-        with self._request_log_lock:
-            request_index = self._next_request_log_index
-            self._next_request_log_index += 1
-        return request_index
 
 
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
@@ -108,7 +94,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         started = time.monotonic()
-        request_index = self.server.next_request_log_index()
         request_path = urlparse(self.path).path
         trace = self._start_trace(request_path)
         if self.config.verbose:
@@ -165,6 +150,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         if self.config.verbose:
             log_json("cursor request body", payload)
 
+        log_cursor_request(payload, self.config)
+
         prepared = prepare_upstream_request(
             payload,
             self.config,
@@ -173,6 +160,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         )
         if trace is not None:
             trace.record_transform(prepared)
+        log_context_summary(prepared)
         if prepared.missing_reasoning_messages:
             LOG.warning(
                 (
@@ -243,6 +231,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             method="POST",
             headers=upstream_headers,
         )
+
+        log_send_summary(prepared)
 
         try:
             if self.config.verbose:
@@ -318,12 +308,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     stream=bool(prepared.payload.get("stream")),
                 )
                 return
-            log_request_lifecycle(
-                request_index=request_index,
-                cursor_payload=payload,
-                prepared=prepared,
-                usage=sent_response.usage,
-            )
+            log_stats_summary(sent_response.usage)
             self._finish_trace(
                 trace,
                 "completed",
@@ -853,7 +838,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--verbose",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Log detailed request lifecycle metadata and full payloads",
+        help="Log detailed request metadata and full payloads",
     )
     parser.add_argument(
         "--trace-dir",
@@ -941,70 +926,56 @@ def usage_from_body(body: bytes) -> dict[str, Any] | None:
     return None
 
 
-def log_request_lifecycle(
-    *,
-    request_index: int,
-    cursor_payload: dict[str, Any],
-    prepared: PreparedRequest,
-    usage: dict[str, Any] | None,
+def log_cursor_request(
+    payload: dict[str, Any],
+    config: ProxyConfig,
 ) -> None:
-    block = request_lifecycle_block(
-        request_index=request_index,
-        cursor_payload=cursor_payload,
-        prepared=prepared,
-        usage=usage,
+    model = str(payload.get("model") or config.upstream_model)
+    LOG.info(
+        "┌ cursor  model=%s messages=%s tools=%s",
+        model,
+        format_count(message_count(payload)),
+        format_count(tool_count(payload)),
     )
+
+
+def log_context_summary(prepared: PreparedRequest) -> None:
+    LOG.info(
+        "├ context filled=%s missing=%s recovered=%s dropped=%s status=%s",
+        format_count(prepared.patched_reasoning_messages),
+        format_count(prepared.missing_reasoning_messages),
+        format_count(prepared.recovered_reasoning_messages),
+        format_count(prepared.recovery_dropped_messages),
+        context_status(prepared),
+    )
+
+
+def log_send_summary(prepared: PreparedRequest) -> None:
+    LOG.info(
+        "├ send    user_msgs=%s messages=%s tools=%s reasoning_content=%s",
+        format_count(user_message_count(prepared.payload)),
+        format_count(message_count(prepared.payload)),
+        format_count(tool_count(prepared.payload)),
+        format_count(reasoning_content_count(prepared.payload)),
+    )
+
+
+def log_stats_summary(usage: dict[str, Any] | None) -> None:
+    LOG.info(
+        "└ stats   prompt=%s output=%s reasoning=%s cache_hit=%s",
+        format_usage_count(usage, "prompt_tokens"),
+        format_usage_count(usage, "completion_tokens"),
+        format_count(reasoning_token_count(usage)),
+        cache_hit_rate(usage),
+    )
+
+
+def context_status(prepared: PreparedRequest) -> str:
     if prepared.recovered_reasoning_messages:
-        LOG.warning("%s", block)
-    else:
-        LOG.info("%s", block)
-
-
-def request_lifecycle_block(
-    *,
-    request_index: int,
-    cursor_payload: dict[str, Any],
-    prepared: PreparedRequest,
-    usage: dict[str, Any] | None,
-) -> str:
-    cursor_messages = message_count(cursor_payload)
-    cursor_tools = tool_count(cursor_payload)
-    upstream_messages = message_count(prepared.payload)
-    upstream_tools = tool_count(prepared.payload)
-    status = "recovered" if prepared.recovered_reasoning_messages else "ok"
-
-    return "\n".join(
-        [
-            (
-                "┌ cursor   "
-                f"index={request_index} model={prepared.original_model} "
-                f"messages={format_count(cursor_messages)} "
-                f"tools={format_count(cursor_tools)}"
-            ),
-            (
-                "├ context  "
-                f"filled={format_count(prepared.patched_reasoning_messages)} "
-                f"missing={format_count(prepared.missing_reasoning_messages)} "
-                f"recovered={format_count(prepared.recovered_reasoning_messages)} "
-                f"dropped={format_count(prepared.recovery_dropped_messages)} "
-                f"status={status}"
-            ),
-            (
-                "├ send     "
-                f"user_msgs={format_count(user_message_count(prepared.payload))} "
-                f"messages={format_count(upstream_messages)} "
-                f"tools={format_count(upstream_tools)} "
-                f"reasoning_content={format_count(reasoning_content_count(prepared.payload))}"
-            ),
-            (
-                "└ stats    "
-                f"prompt={format_usage_count(usage, 'prompt_tokens')} "
-                f"output={format_usage_count(usage, 'completion_tokens')} "
-                f"reasoning={format_count(reasoning_token_count(usage))} "
-                f"cache_hit={cache_hit_rate(usage)}"
-            ),
-        ]
-    )
+        return "recovered"
+    if prepared.missing_reasoning_messages:
+        return "missing"
+    return "ok"
 
 
 def message_count(payload: dict[str, Any]) -> int:
