@@ -586,16 +586,22 @@ class ProxyEndToEndTests(unittest.TestCase):
 
         output = "\n".join(captured.output)
         self.assertEqual(status, 200)
-        self.assertIn("cursor request: model='deepseek-v4-pro'", output)
         self.assertIn(
-            "deepseek send: model=deepseek-v4-pro stream=0 rounds=1 msgs=1 tools=1 reasoning=0/0ch",
+            "┌ cursor   id=1 model=deepseek-v4-pro messages=1 tools=1",
             output,
         )
         self.assertIn(
-            "deepseek usage: prompt=20 completion=5 total=25 cache=12/8 hit=60.0% reasoning=3",
+            "├ context  filled=0 missing=0 recovered=0 dropped=0 status=ok",
             output,
         )
-        self.assertIn("request complete status=200", output)
+        self.assertIn(
+            "├ send     user_msgs=1 messages=1 tools=1 reasoning_content=0",
+            output,
+        )
+        self.assertIn(
+            "└ stats    prompt=20 output=5 reasoning=3 cache_hit=60.0%",
+            output,
+        )
         self.assertNotIn("What is tomorrow's date?", output)
         self.assertNotIn("sk-from-cursor", output)
 
@@ -738,7 +744,7 @@ class ProxyEndToEndTests(unittest.TestCase):
             {"role": "user", "content": "Thanks, now continue."},
         )
         self.assertIn(
-            "refreshed reasoning_content history",
+            "status=recovered",
             "\n".join(captured.output),
         )
 

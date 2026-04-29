@@ -149,7 +149,7 @@ class ServerTests(unittest.TestCase):
         finally:
             handler.server.reasoning_store.close()
 
-        self.assertFalse(sent)
+        self.assertFalse(sent.sent)
         self.assertIn("sending upstream response body", "\n".join(captured.output))
 
     def test_streaming_response_stops_on_client_disconnect(self) -> None:
@@ -182,7 +182,7 @@ class ServerTests(unittest.TestCase):
         finally:
             handler.server.reasoning_store.close()
 
-        self.assertFalse(sent)
+        self.assertFalse(sent.sent)
         self.assertEqual(response.readline_calls, 1)
         self.assertIn("sending streaming response chunk", "\n".join(captured.output))
 
@@ -200,7 +200,7 @@ class ServerTests(unittest.TestCase):
         finally:
             handler.server.reasoning_store.close()
 
-        self.assertFalse(sent)
+        self.assertFalse(sent.sent)
         self.assertIn(
             "upstream streaming response read failed",
             "\n".join(captured.output),
