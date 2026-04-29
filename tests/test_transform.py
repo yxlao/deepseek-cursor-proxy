@@ -470,6 +470,193 @@ class TransformTests(unittest.TestCase):
             prepared.payload["messages"][1]["reasoning_content"], "first reasoning"
         )
 
+    def test_strict_hit_backfills_portable_cache_for_mode_switch(self) -> None:
+        agent_prior = [
+            {"role": "system", "content": "Agent mode."},
+            {"role": "user", "content": "set up the task"},
+            {"role": "user", "content": "read README"},
+        ]
+        plan_prior = [
+            {"role": "system", "content": "Plan mode."},
+            {"role": "user", "content": "set up the task"},
+            {"role": "user", "content": "read README"},
+        ]
+        tool_call = {
+            "id": "call_mode_switch",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+        }
+        assistant_message = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "Need README before answering.",
+            "tool_calls": [tool_call],
+        }
+        self.store.store_assistant_message(
+            assistant_message,
+            cache_scope(agent_prior),
+        )
+
+        strict_prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    *agent_prior,
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                ],
+            },
+            ProxyConfig(),
+            self.store,
+        )
+        portable_prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    *plan_prior,
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                ],
+            },
+            ProxyConfig(),
+            self.store,
+        )
+
+        self.assertEqual(strict_prepared.patched_reasoning_messages, 1)
+        self.assertEqual(portable_prepared.patched_reasoning_messages, 1)
+        self.assertEqual(portable_prepared.missing_reasoning_messages, 0)
+        self.assertEqual(
+            portable_prepared.payload["messages"][3]["reasoning_content"],
+            "Need README before answering.",
+        )
+        self.assertTrue(
+            str(portable_prepared.reasoning_diagnostics[-1]["hit_kind"]).startswith(
+                "portable_"
+            )
+        )
+
+    def test_portable_turn_cache_restores_final_assistant_after_tool_result(
+        self,
+    ) -> None:
+        agent_user = {"role": "user", "content": "look up project state"}
+        plan_user = dict(agent_user)
+        tool_call = {
+            "id": "call_project_state",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"query":"state"}'},
+        }
+        tool_result = {
+            "role": "tool",
+            "tool_call_id": "call_project_state",
+            "content": '{"state":"ready"}',
+        }
+        tool_assistant = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "Need the project state.",
+            "tool_calls": [tool_call],
+        }
+        final_assistant = {
+            "role": "assistant",
+            "content": "The project is ready.",
+            "reasoning_content": "The tool result is enough to answer.",
+        }
+        agent_initial_prior = [
+            {"role": "system", "content": "Agent mode."},
+            agent_user,
+        ]
+        agent_final_prior = [*agent_initial_prior, tool_assistant, tool_result]
+        self.store.store_assistant_message(
+            tool_assistant,
+            cache_scope(agent_initial_prior),
+            DEFAULT_CACHE_NAMESPACE,
+            agent_initial_prior,
+        )
+        self.store.store_assistant_message(
+            final_assistant,
+            cache_scope(agent_final_prior),
+            DEFAULT_CACHE_NAMESPACE,
+            agent_final_prior,
+        )
+
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    {"role": "system", "content": "Plan mode."},
+                    plan_user,
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                    tool_result,
+                    {"role": "assistant", "content": "The project is ready."},
+                    {"role": "user", "content": "continue"},
+                ],
+            },
+            ProxyConfig(missing_reasoning_strategy="reject"),
+            self.store,
+        )
+
+        self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(prepared.patched_reasoning_messages, 2)
+        self.assertEqual(
+            prepared.payload["messages"][4]["reasoning_content"],
+            "The tool result is enough to answer.",
+        )
+
+    def test_portable_turn_cache_isolated_for_reused_tool_call_id(self) -> None:
+        tool_call = {
+            "id": "call_reused",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"},
+        }
+        assistant_a = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "Reasoning for thread A.",
+            "tool_calls": [tool_call],
+        }
+        assistant_b = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "Reasoning for thread B.",
+            "tool_calls": [tool_call],
+        }
+        prior_a = [
+            {"role": "system", "content": "Agent mode."},
+            {"role": "user", "content": "thread A"},
+        ]
+        prior_b = [
+            {"role": "system", "content": "Agent mode."},
+            {"role": "user", "content": "thread B"},
+        ]
+        self.store.store_assistant_message(
+            assistant_a,
+            cache_scope(prior_a),
+            DEFAULT_CACHE_NAMESPACE,
+            prior_a,
+        )
+        self.store.store_assistant_message(
+            assistant_b,
+            cache_scope(prior_b),
+            DEFAULT_CACHE_NAMESPACE,
+            prior_b,
+        )
+
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    {"role": "system", "content": "Plan mode."},
+                    {"role": "user", "content": "thread A"},
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                ],
+            },
+            ProxyConfig(),
+            self.store,
+        )
+
+        self.assertEqual(
+            prepared.payload["messages"][2]["reasoning_content"],
+            "Reasoning for thread A.",
+        )
+
     def test_restores_reasoning_when_cursor_drops_tool_call_id_but_keeps_function_call(
         self,
     ) -> None:
@@ -754,6 +941,103 @@ class TransformTests(unittest.TestCase):
                 "tool_call_id": "call_new",
                 "content": "new result",
             },
+        )
+
+    def test_recovered_response_is_recorded_under_pre_recovery_scope(self) -> None:
+        old_tool_call = {
+            "id": "call_old",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"README.md"}',
+            },
+        }
+        new_tool_call = {
+            "id": "call_new",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"query":"new"}'},
+        }
+        first_payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "user", "content": "old model turn"},
+                {"role": "assistant", "content": "", "tool_calls": [old_tool_call]},
+                {"role": "tool", "tool_call_id": "call_old", "content": "old result"},
+                {"role": "user", "content": "continue with DeepSeek"},
+            ],
+        }
+        first_recovered = prepare_upstream_request(
+            first_payload,
+            ProxyConfig(missing_reasoning_strategy="recover"),
+            self.store,
+        )
+        self.assertEqual(first_recovered.recovered_reasoning_messages, 1)
+
+        response_body = json.dumps(
+            {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": "deepseek-v4-pro",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": "Need the new lookup.",
+                            "tool_calls": [new_tool_call],
+                        },
+                    }
+                ],
+            }
+        ).encode()
+        rewritten = rewrite_response_body(
+            response_body,
+            "deepseek-v4-pro",
+            self.store,
+            first_recovered.payload["messages"],
+            first_recovered.cache_namespace,
+            content_prefix=first_recovered.recovery_notice,
+            scope=first_recovered.record_response_scope,
+            prior_messages=first_recovered.record_response_messages,
+        )
+        recovered_assistant = json.loads(rewritten)["choices"][0]["message"]
+        recovered_assistant.pop("reasoning_content", None)
+
+        old_prior = [{"role": "user", "content": "old model turn"}]
+        self.store.store_assistant_message(
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "Need the old file.",
+                "tool_calls": [old_tool_call],
+            },
+            conversation_scope(old_prior, first_recovered.cache_namespace),
+            first_recovered.cache_namespace,
+            old_prior,
+        )
+        second_payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                *first_payload["messages"],
+                recovered_assistant,
+                {"role": "tool", "tool_call_id": "call_new", "content": "new result"},
+            ],
+        }
+
+        second_prepared = prepare_upstream_request(
+            second_payload,
+            ProxyConfig(missing_reasoning_strategy="recover"),
+            self.store,
+        )
+
+        self.assertEqual(second_prepared.missing_reasoning_messages, 0)
+        self.assertEqual(second_prepared.recovered_reasoning_messages, 0)
+        self.assertEqual(second_prepared.recovery_dropped_messages, 0)
+        self.assertEqual(
+            second_prepared.payload["messages"][4]["reasoning_content"],
+            "Need the new lookup.",
         )
 
     def test_recovery_boundary_accepts_legacy_notice_text(self) -> None:

@@ -231,6 +231,7 @@ class TraceRequest:
             "recovered_reasoning_messages": prepared.recovered_reasoning_messages,
             "recovery_dropped_messages": prepared.recovery_dropped_messages,
             "recovery_notice": prepared.recovery_notice,
+            "record_response_scope": prepared.record_response_scope,
             "reasoning_diagnostics": prepared.reasoning_diagnostics,
             "recovery_steps": prepared.recovery_steps,
             "upstream_request_summary": payload_summary(prepared.payload),

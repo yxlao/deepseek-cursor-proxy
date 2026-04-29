@@ -13,6 +13,7 @@ from .reasoning_store import (
     message_signature,
     tool_call_ids,
     tool_call_signature,
+    turn_context_signature,
 )
 
 
@@ -101,6 +102,8 @@ class PreparedRequest:
     recovered_reasoning_messages: int = 0
     recovery_dropped_messages: int = 0
     recovery_notice: str | None = None
+    record_response_scope: str | None = None
+    record_response_messages: list[dict[str, Any]] = field(default_factory=list)
     reasoning_diagnostics: list[dict[str, Any]] = field(default_factory=list)
     recovery_steps: list[dict[str, Any]] = field(default_factory=list)
 
@@ -260,7 +263,12 @@ def normalize_message(
                 )
                 lookup_scope = conversation_scope(prior_messages, cache_namespace)
                 lookup_keys = (
-                    reasoning_lookup_keys(normalized, lookup_scope)
+                    reasoning_lookup_keys(
+                        normalized,
+                        lookup_scope,
+                        cache_namespace,
+                        prior_messages,
+                    )
                     if needs_reasoning
                     else []
                 )
@@ -273,6 +281,13 @@ def normalize_message(
                             hit_kind = lookup_key["kind"]
                             normalized["reasoning_content"] = restored
                             patched = True
+                            if not lookup_key.get("portable"):
+                                store.backfill_portable_aliases(
+                                    normalized,
+                                    restored,
+                                    cache_namespace,
+                                    prior_messages,
+                                )
                             break
                 if needs_reasoning and not patched:
                     missing = True
@@ -315,11 +330,14 @@ def normalize_message(
 def reasoning_lookup_keys(
     message: dict[str, Any],
     scope: str,
+    cache_namespace: str = "",
+    prior_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     keys = [
         {
             "kind": "message_signature",
             "key": f"scope:{scope}:signature:{message_signature(message)}",
+            "portable": False,
             "hit": False,
         }
     ]
@@ -328,6 +346,7 @@ def reasoning_lookup_keys(
             "kind": "tool_call_id",
             "tool_call_id": tool_call_id,
             "key": f"scope:{scope}:tool_call:{tool_call_id}",
+            "portable": False,
             "hit": False,
         }
         for tool_call_id in tool_call_ids(message)
@@ -340,11 +359,57 @@ def reasoning_lookup_keys(
                 f"scope:{scope}:tool_call_signature:"
                 f"{tool_call_signature(tool_call)}"
             ),
+            "portable": False,
             "hit": False,
         }
         for tool_call in (message.get("tool_calls") or [])
         if isinstance(tool_call, dict)
     )
+    if cache_namespace and prior_messages is not None:
+        turn_signature = turn_context_signature(prior_messages)
+        keys.append(
+            {
+                "kind": "portable_message_signature",
+                "key": (
+                    f"namespace:{cache_namespace}:turn:{turn_signature}:"
+                    f"signature:{message_signature(message)}"
+                ),
+                "turn_context_signature": turn_signature,
+                "portable": True,
+                "hit": False,
+            }
+        )
+        keys.extend(
+            {
+                "kind": "portable_tool_call_id",
+                "tool_call_id": tool_call_id,
+                "key": (
+                    f"namespace:{cache_namespace}:turn:{turn_signature}:"
+                    f"tool_call:{tool_call_id}"
+                ),
+                "turn_context_signature": turn_signature,
+                "portable": True,
+                "hit": False,
+            }
+            for tool_call_id in tool_call_ids(message)
+        )
+        keys.extend(
+            {
+                "kind": "portable_tool_call_signature",
+                "function_name": str(
+                    (tool_call.get("function") or {}).get("name") or ""
+                ),
+                "key": (
+                    f"namespace:{cache_namespace}:turn:{turn_signature}:"
+                    f"tool_call_signature:{tool_call_signature(tool_call)}"
+                ),
+                "turn_context_signature": turn_signature,
+                "portable": True,
+                "hit": False,
+            }
+            for tool_call in (message.get("tool_calls") or [])
+            if isinstance(tool_call, dict)
+        )
     return keys
 
 
@@ -605,6 +670,10 @@ def prepare_upstream_request(
             keep_reasoning=not thinking_disabled,
         )
     )
+    record_response_messages = messages
+    record_response_scope = conversation_scope(
+        record_response_messages, cache_namespace
+    )
     recovered_count = 0
     recovery_dropped_messages = 0
     recovery_notice = None
@@ -645,6 +714,8 @@ def prepare_upstream_request(
         recovered_reasoning_messages=recovered_count,
         recovery_dropped_messages=recovery_dropped_messages,
         recovery_notice=recovery_notice,
+        record_response_scope=record_response_scope,
+        record_response_messages=record_response_messages,
         reasoning_diagnostics=reasoning_diagnostics,
         recovery_steps=recovery_steps,
     )
@@ -655,6 +726,8 @@ def record_response_reasoning(
     store: ReasoningStore | None,
     request_messages: list[dict[str, Any]],
     cache_namespace: str = "",
+    scope: str | None = None,
+    prior_messages: list[dict[str, Any]] | None = None,
 ) -> int:
     if store is None:
         return 0
@@ -662,13 +735,25 @@ def record_response_reasoning(
     choices = response_payload.get("choices")
     if not isinstance(choices, list):
         return stored
-    scope = conversation_scope(request_messages, cache_namespace)
+    response_scope = (
+        scope
+        if scope is not None
+        else conversation_scope(request_messages, cache_namespace)
+    )
+    response_prior_messages = (
+        prior_messages if prior_messages is not None else request_messages
+    )
     for choice in choices:
         if not isinstance(choice, dict):
             continue
         message = choice.get("message")
         if isinstance(message, dict):
-            stored += store.store_assistant_message(message, scope)
+            stored += store.store_assistant_message(
+                message,
+                response_scope,
+                cache_namespace,
+                response_prior_messages,
+            )
     return stored
 
 
@@ -679,13 +764,20 @@ def rewrite_response_body(
     request_messages: list[dict[str, Any]],
     cache_namespace: str = "",
     content_prefix: str | None = None,
+    scope: str | None = None,
+    prior_messages: list[dict[str, Any]] | None = None,
 ) -> bytes:
     response_payload = json.loads(body.decode("utf-8"))
     if isinstance(response_payload, dict):
         if content_prefix:
             prefix_response_content(response_payload, content_prefix)
         record_response_reasoning(
-            response_payload, store, request_messages, cache_namespace
+            response_payload,
+            store,
+            request_messages,
+            cache_namespace,
+            scope=scope,
+            prior_messages=prior_messages,
         )
         if "model" in response_payload:
             response_payload["model"] = original_model
