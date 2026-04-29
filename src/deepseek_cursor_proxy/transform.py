@@ -74,10 +74,7 @@ CURSOR_THINKING_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
-RECOVERY_NOTICE_TEXT = (
-    "[deepseek-cursor-proxy] Recovered this DeepSeek chat because older "
-    "tool-call reasoning was unavailable; continuing with recent context only."
-)
+RECOVERY_NOTICE_TEXT = "[deepseek-cursor-proxy] Refreshed reasoning_content history."
 LEGACY_RECOVERY_NOTICE_TEXT = (
     "Note: recovered this DeepSeek chat because older tool-call reasoning "
     "was unavailable; continuing with recent context only."

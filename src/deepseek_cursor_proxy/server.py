@@ -160,16 +160,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             )
         if prepared.recovered_reasoning_messages:
             if prepared.recovery_notice:
-                LOG.warning(
-                    (
-                        "recovered request because cached reasoning_content was "
-                        "unavailable for %s assistant message(s); omitted %s "
-                        "older message(s) from forwarded history and will show "
-                        "a Cursor notice"
-                    ),
-                    prepared.recovered_reasoning_messages,
-                    prepared.recovery_dropped_messages,
-                )
+                LOG.warning("refreshed reasoning_content history")
             else:
                 LOG.info(
                     (

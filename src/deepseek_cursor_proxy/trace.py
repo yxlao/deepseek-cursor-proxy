@@ -105,7 +105,10 @@ def message_summaries(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 len(reasoning) if isinstance(reasoning, str) else 0
             ),
             "has_recovery_notice": content.startswith(
-                "[deepseek-cursor-proxy] Recovered"
+                (
+                    "[deepseek-cursor-proxy] Refreshed reasoning_content history.",
+                    "[deepseek-cursor-proxy] Recovered",
+                )
             ),
         }
         summaries.append(summary)

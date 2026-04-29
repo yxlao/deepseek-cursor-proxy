@@ -738,7 +738,7 @@ class ProxyEndToEndTests(unittest.TestCase):
             {"role": "user", "content": "Thanks, now continue."},
         )
         self.assertIn(
-            "cached reasoning_content was unavailable",
+            "refreshed reasoning_content history",
             "\n".join(captured.output),
         )
 
