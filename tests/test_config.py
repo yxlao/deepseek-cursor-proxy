@@ -39,6 +39,7 @@ class ConfigTests(unittest.TestCase):
                 home / ".deepseek-cursor-proxy" / "reasoning_content.sqlite3",
             )
             self.assertEqual(ProxyConfig().ngrok, DEFAULT_NGROK)
+            self.assertIsNone(ProxyConfig().trace_dir)
 
     def test_missing_default_config_file_is_populated(self) -> None:
         with TemporaryDirectory() as temp_dir:

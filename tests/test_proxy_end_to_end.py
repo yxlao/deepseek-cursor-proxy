@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import threading
 import time
 import unittest
@@ -16,6 +18,7 @@ from deepseek_cursor_proxy.reasoning_store import (
     message_signature,
 )
 from deepseek_cursor_proxy.server import DeepSeekProxyHandler, DeepSeekProxyServer
+from deepseek_cursor_proxy.trace import TraceWriter
 from deepseek_cursor_proxy.transform import (
     RECOVERY_NOTICE_CONTENT,
     reasoning_cache_namespace,
@@ -249,6 +252,12 @@ class ReasoningStreamingDeepSeekHandler(BaseHTTPRequestHandler):
                 "created": 1,
                 "model": "deepseek-v4-pro",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                    "completion_tokens_details": {"reasoning_tokens": 3},
+                },
             },
         ]
         for chunk in chunks:
@@ -476,6 +485,17 @@ class ServerFixture:
         self.thread.join(timeout=5)
 
 
+def read_single_trace(session_dir: Path) -> dict:
+    deadline = time.monotonic() + 2
+    trace_files = sorted(session_dir.glob("request-*.json"))
+    while not trace_files and time.monotonic() < deadline:
+        time.sleep(0.01)
+        trace_files = sorted(session_dir.glob("request-*.json"))
+    if len(trace_files) != 1:
+        raise AssertionError(f"expected one trace file, found {trace_files}")
+    return json.loads(trace_files[0].read_text(encoding="utf-8"))
+
+
 class ProxyEndToEndTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeDeepSeekHandler.requests = []
@@ -598,6 +618,47 @@ class ProxyEndToEndTests(unittest.TestCase):
         self.assertIn("What is tomorrow's date?", output)
         self.assertNotIn("sk-from-cursor", output)
 
+    def test_trace_captures_full_non_streaming_replay_without_api_key(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            writer = TraceWriter(temp_dir)
+            self.proxy.server.trace_writer = writer
+
+            status, payload = post_json(
+                f"{self.proxy.url}/v1/chat/completions",
+                first_cursor_request(),
+                api_key="sk-from-cursor",
+            )
+
+            trace = read_single_trace(writer.session_dir)
+            serialized = json.dumps(trace)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["choices"][0]["message"]["tool_calls"][0]["id"], "call_date"
+        )
+        self.assertEqual(trace["completion"]["status"], "completed")
+        self.assertEqual(
+            trace["request"]["body"]["messages"][0]["content"],
+            "What is tomorrow's date?",
+        )
+        self.assertEqual(
+            trace["transform"]["upstream_request_body"]["model"],
+            "deepseek-v4-pro",
+        )
+        self.assertEqual(
+            trace["upstream"]["response"]["body"]["json"]["choices"][0]["message"][
+                "reasoning_content"
+            ],
+            TOOL_REASONING,
+        )
+        self.assertEqual(
+            trace["cursor_response"]["body"]["json"]["choices"][0]["message"][
+                "reasoning_content"
+            ],
+            TOOL_REASONING,
+        )
+        self.assertNotIn("sk-from-cursor", serialized)
+
     def test_proxy_rejects_missing_cursor_bearer_token(self) -> None:
         request = Request(
             f"{self.proxy.url}/v1/chat/completions",
@@ -680,6 +741,32 @@ class ProxyEndToEndTests(unittest.TestCase):
             "cached reasoning_content was unavailable",
             "\n".join(captured.output),
         )
+
+    def test_trace_captures_recovery_diagnostics(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            writer = TraceWriter(temp_dir)
+            self.proxy.server.trace_writer = writer
+
+            status, _ = post_json(
+                f"{self.proxy.url}/v1/chat/completions",
+                third_cursor_request_missing_all_reasoning(),
+            )
+
+            trace = read_single_trace(writer.session_dir)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(trace["transform"]["recovered_reasoning_messages"], 2)
+        self.assertEqual(
+            trace["transform"]["recovery_steps"][0]["strategy"],
+            "latest_user",
+        )
+        missing_diagnostics = [
+            item
+            for item in trace["transform"]["reasoning_diagnostics"]
+            if item["missing"]
+        ]
+        self.assertGreaterEqual(len(missing_diagnostics), 2)
+        self.assertIn("lookup_keys", missing_diagnostics[0])
 
     def test_proxy_keeps_deepseek_context_after_recovery_boundary(self) -> None:
         status, first = post_json(
@@ -946,6 +1033,45 @@ class ReasoningStreamingProxyTests(unittest.TestCase):
                 + message_signature(stored_message)
             ),
             "Need context.",
+        )
+
+    def test_trace_captures_streaming_replay_chunks(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            writer = TraceWriter(temp_dir)
+            self.proxy.server.trace_writer = writer
+            request = Request(
+                f"{self.proxy.url}/v1/chat/completions",
+                data=json.dumps(
+                    {
+                        "model": "deepseek-v4-pro",
+                        "stream": True,
+                        "messages": [{"role": "user", "content": "stream reasoning"}],
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Authorization": "Bearer sk-cursor-test",
+                    "Content-Type": "application/json",
+                },
+            )
+
+            with urlopen(request, timeout=2) as response:
+                response.read()
+
+            trace = read_single_trace(writer.session_dir)
+
+        self.assertEqual(trace["completion"]["status"], "completed")
+        self.assertIn(
+            "reasoning_content",
+            trace["upstream"]["stream"]["chunks"][0]["line"],
+        )
+        self.assertIn(
+            "<think>",
+            trace["cursor_response"]["stream"]["chunks"][0]["line"],
+        )
+        self.assertEqual(
+            trace["upstream"]["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            3,
         )
 
     def test_streaming_recovery_notice_is_visible_in_cursor_content(self) -> None:
