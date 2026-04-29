@@ -597,19 +597,19 @@ class ProxyEndToEndTests(unittest.TestCase):
         self.assertEqual(len(stage_records), 4)
         self.assertTrue(all("\n" not in record for record in stage_records))
         self.assertIn(
-            "┌ cursor   model=deepseek-v4-pro messages=1 tools=1",
+            "┌ cursor  model=deepseek-v4-pro messages=1 tools=1",
             output,
         )
         self.assertIn(
-            "├ context  filled=0 missing=0 recovered=0 dropped=0 status=ok",
+            "├ context filled=0 missing=0 recovered=0 dropped=0 status=ok",
             output,
         )
         self.assertIn(
-            "├ send     user_msgs=1 messages=1 tools=1 reasoning_content=0",
+            "├ send    user_msgs=1 messages=1 tools=1 reasoning_content=0",
             output,
         )
         self.assertIn(
-            "└ stats    prompt=20 output=5 reasoning=3 cache_hit=60.0%",
+            "└ stats   prompt=20 output=5 reasoning=3 cache_hit=60.0%",
             output,
         )
         self.assertNotIn("What is tomorrow's date?", output)
