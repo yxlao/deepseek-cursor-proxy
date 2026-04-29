@@ -168,6 +168,12 @@ Run without ngrok for local curl testing:
 deepseek-cursor-proxy --no-ngrok --port 9000 --verbose
 ```
 
+Capture full structured request traces for debugging:
+
+```bash
+deepseek-cursor-proxy --verbose --trace-dir ./trace-dumps
+```
+
 Use another config file:
 
 ```bash

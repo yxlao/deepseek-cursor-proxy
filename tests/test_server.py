@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 import gzip
 import json
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 import zlib
@@ -80,6 +81,8 @@ class ServerTests(unittest.TestCase):
                 "--no-verbose",
                 "--no-display-reasoning",
                 "--cors",
+                "--trace-dir",
+                "/tmp/dcp-traces",
             ]
         )
 
@@ -87,6 +90,7 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(args.verbose)
         self.assertFalse(args.display_reasoning)
         self.assertTrue(args.cors)
+        self.assertEqual(args.trace_dir, Path("/tmp/dcp-traces"))
 
     def test_read_response_body_handles_gzip(self) -> None:
         body = gzip.compress(b'{"ok":true}')

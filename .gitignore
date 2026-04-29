@@ -140,6 +140,7 @@ celerybeat.pid
 .deepseek_cursor_reasoning.sqlite3*
 .deepseek-cursor/
 .deepseek-cursor-proxy/
+trace-dumps/
 reasoning_content.sqlite3*
 .venv
 env/

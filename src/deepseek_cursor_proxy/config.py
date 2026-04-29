@@ -194,6 +194,7 @@ class ProxyConfig:
     cors: bool = DEFAULT_CORS
     verbose: bool = DEFAULT_VERBOSE
     ngrok: bool = DEFAULT_NGROK
+    trace_dir: Path | None = None
 
     @classmethod
     def from_file(
