@@ -116,6 +116,50 @@ class StreamAccumulatorTests(unittest.TestCase):
         self.assertEqual(accumulator.store_reasoning(store, scope), 0)
         store.close()
 
+    def test_stores_same_streaming_choice_under_multiple_scopes(self) -> None:
+        store = ReasoningStore(":memory:")
+        accumulator = StreamAccumulator()
+        accumulator.ingest_chunk(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": "Need a tool.",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_stream",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
+        )
+
+        first_scope = conversation_scope([{"role": "user", "content": "full"}])
+        second_scope = conversation_scope([{"role": "user", "content": "active"}])
+        first_stored = accumulator.store_finished_reasoning(store, first_scope)
+        second_stored = accumulator.store_finished_reasoning(store, second_scope)
+
+        self.assertGreater(first_stored, 0)
+        self.assertGreater(second_stored, 0)
+        self.assertEqual(
+            store.get(f"scope:{first_scope}:tool_call:call_stream"), "Need a tool."
+        )
+        self.assertEqual(
+            store.get(f"scope:{second_scope}:tool_call:call_stream"), "Need a tool."
+        )
+        store.close()
+
     def test_stores_tool_call_reasoning_before_finish_reason(self) -> None:
         store = ReasoningStore(":memory:")
         accumulator = StreamAccumulator()

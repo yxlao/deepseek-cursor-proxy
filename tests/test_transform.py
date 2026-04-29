@@ -925,6 +925,10 @@ class TransformTests(unittest.TestCase):
         )
 
         self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(prepared.recovered_reasoning_messages, 0)
+        self.assertEqual(prepared.recovery_dropped_messages, 0)
+        self.assertTrue(prepared.continued_recovery_boundary)
+        self.assertGreater(prepared.retired_prefix_messages, 0)
         self.assertIsNone(prepared.recovery_notice)
         self.assertEqual(
             [message["role"] for message in prepared.payload["messages"]],
@@ -999,24 +1003,19 @@ class TransformTests(unittest.TestCase):
             first_recovered.payload["messages"],
             first_recovered.cache_namespace,
             content_prefix=first_recovered.recovery_notice,
-            scope=first_recovered.record_response_scope,
-            prior_messages=first_recovered.record_response_messages,
+            recording_contexts=first_recovered.record_response_contexts,
         )
         recovered_assistant = json.loads(rewritten)["choices"][0]["message"]
+        self.assertEqual(len(first_recovered.record_response_contexts), 2)
+        for scope, _messages in first_recovered.record_response_contexts:
+            self.assertEqual(
+                self.store.get(
+                    f"scope:{scope}:signature:{message_signature(recovered_assistant)}"
+                ),
+                "Need the new lookup.",
+            )
         recovered_assistant.pop("reasoning_content", None)
 
-        old_prior = [{"role": "user", "content": "old model turn"}]
-        self.store.store_assistant_message(
-            {
-                "role": "assistant",
-                "content": "",
-                "reasoning_content": "Need the old file.",
-                "tool_calls": [old_tool_call],
-            },
-            conversation_scope(old_prior, first_recovered.cache_namespace),
-            first_recovered.cache_namespace,
-            old_prior,
-        )
         second_payload = {
             "model": "deepseek-v4-pro",
             "messages": [
@@ -1035,8 +1034,10 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(second_prepared.missing_reasoning_messages, 0)
         self.assertEqual(second_prepared.recovered_reasoning_messages, 0)
         self.assertEqual(second_prepared.recovery_dropped_messages, 0)
+        self.assertTrue(second_prepared.continued_recovery_boundary)
+        self.assertGreater(second_prepared.retired_prefix_messages, 0)
         self.assertEqual(
-            second_prepared.payload["messages"][4]["reasoning_content"],
+            second_prepared.payload["messages"][2]["reasoning_content"],
             "Need the new lookup.",
         )
 
@@ -1128,6 +1129,10 @@ class TransformTests(unittest.TestCase):
         )
 
         self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(prepared.recovered_reasoning_messages, 0)
+        self.assertEqual(prepared.recovery_dropped_messages, 0)
+        self.assertTrue(prepared.continued_recovery_boundary)
+        self.assertGreater(prepared.retired_prefix_messages, 0)
         self.assertIsNone(prepared.recovery_notice)
         self.assertEqual(
             prepared.payload["messages"][2]["reasoning_content"],
@@ -1268,6 +1273,64 @@ class TransformTests(unittest.TestCase):
 
         self.assertEqual(prepared.missing_reasoning_messages, 1)
         self.assertNotIn("reasoning_content", prepared.payload["messages"][1])
+
+    def test_deepseek_pro_and_flash_share_reasoning_namespace(self) -> None:
+        config = ProxyConfig()
+        namespace_pro = reasoning_cache_namespace(
+            config,
+            "deepseek-v4-pro",
+            {"type": "enabled"},
+            "high",
+            "Bearer key-a",
+        )
+        namespace_flash = reasoning_cache_namespace(
+            config,
+            "deepseek-v4-flash",
+            {"type": "enabled"},
+            "high",
+            "Bearer key-a",
+        )
+        self.assertEqual(namespace_pro, namespace_flash)
+
+        prior = [{"role": "user", "content": "read README"}]
+        tool_call = {
+            "id": "call_shared",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"README.md"}',
+            },
+        }
+        self.store.store_assistant_message(
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "Shared DeepSeek reasoning.",
+                "tool_calls": [tool_call],
+            },
+            conversation_scope(prior, namespace_pro),
+            namespace_pro,
+            prior,
+        )
+
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-flash",
+                "messages": [
+                    *prior,
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                ],
+            },
+            config,
+            self.store,
+            authorization="Bearer key-a",
+        )
+
+        self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(
+            prepared.payload["messages"][1]["reasoning_content"],
+            "Shared DeepSeek reasoning.",
+        )
 
     def test_converted_function_message_uses_tool_schema(self) -> None:
         payload = {

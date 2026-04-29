@@ -35,7 +35,7 @@ class StreamingChoice:
 class StreamAccumulator:
     def __init__(self) -> None:
         self.choices: dict[int, StreamingChoice] = {}
-        self._stored_choices: dict[int, str] = {}
+        self._stored_choices: dict[tuple[int, str], str] = {}
 
     def ingest_chunk(self, chunk: dict[str, Any]) -> None:
         choices = chunk.get("choices")
@@ -189,7 +189,8 @@ class StreamAccumulator:
         prior_messages: list[dict[str, Any]] | None = None,
     ) -> int:
         stage_rank = {"tool_call": 1, "final": 2}
-        previous_stage = self._stored_choices.get(index)
+        storage_key = (index, scope)
+        previous_stage = self._stored_choices.get(storage_key)
         if stage_rank.get(previous_stage or "", 0) >= stage_rank.get(stage, 0):
             return 0
         stored = store.store_assistant_message(
@@ -199,7 +200,7 @@ class StreamAccumulator:
             prior_messages,
         )
         if stored:
-            self._stored_choices[index] = stage
+            self._stored_choices[storage_key] = stage
         return stored
 
     def _has_identified_tool_calls(self, choice: StreamingChoice) -> bool:

@@ -232,6 +232,11 @@ class TraceRequest:
             "recovery_dropped_messages": prepared.recovery_dropped_messages,
             "recovery_notice": prepared.recovery_notice,
             "record_response_scope": prepared.record_response_scope,
+            "record_response_scopes": [
+                scope for scope, _messages in prepared.record_response_contexts
+            ],
+            "continued_recovery_boundary": prepared.continued_recovery_boundary,
+            "retired_prefix_messages": prepared.retired_prefix_messages,
             "reasoning_diagnostics": prepared.reasoning_diagnostics,
             "recovery_steps": prepared.recovery_steps,
             "upstream_request_summary": payload_summary(prepared.payload),
