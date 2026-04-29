@@ -48,30 +48,7 @@ brew install ngrok
 ngrok config add-authtoken <your-ngrok-token>
 ```
 
-### Step 2: Add Cursor Custom Model
-
-In Cursor, add the DeepSeek custom model and point it at this proxy:
-
-- Model: `deepseek-v4-pro`
-- API Key: your DeepSeek API key
-- Base URL: your ngrok HTTPS URL with the `/v1` API version path
-
-The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is used as a fallback only when a request does not include a model.
-
-For example, if ngrok dashboard shows `https://example.ngrok-free.dev`, use:
-
-```text
-https://example.ngrok-free.dev/v1
-```
-
-<img src="assets/cursor_config.png" width="600" alt="Cursor settings for DeepSeek through the proxy">
-
-Note: you can toggle the custom API on and off with:
-
-- macOS: `Cmd+Shift+0`
-- Windows/Linux: `Ctrl+Shift+0`
-
-### Step 3: Install and Start the Proxy Server
+### Step 2: Install and Start the Proxy Server
 
 **Run with UV**
 
@@ -125,6 +102,29 @@ deepseek-cursor-proxy --no-ngrok
 # Use a different local port
 deepseek-cursor-proxy --port 9000
 ```
+
+### Step 3: Add Cursor Custom Model
+
+In Cursor, add the DeepSeek custom model and point it at this proxy:
+
+- Model: `deepseek-v4-pro`
+- API Key: your DeepSeek API key
+- Base URL: your ngrok HTTPS URL with the `/v1` API version path
+
+The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is used as a fallback only when a request does not include a model.
+
+For example, if ngrok dashboard shows `https://example.ngrok-free.dev`, use:
+
+```text
+https://example.ngrok-free.dev/v1
+```
+
+<img src="assets/cursor_config.png" width="600" alt="Cursor settings for DeepSeek through the proxy">
+
+Note: you can toggle the custom API on and off with:
+
+- macOS: `Cmd+Shift+0`
+- Windows/Linux: `Ctrl+Shift+0`
 
 ### Step 4: Chat with DeepSeek in Cursor
 
