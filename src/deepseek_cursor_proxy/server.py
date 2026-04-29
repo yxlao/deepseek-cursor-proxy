@@ -266,6 +266,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     prepared.payload["messages"],
                     prepared.cache_namespace,
                     prepared.recovery_notice,
+                    prepared.record_response_scope,
                 )
             else:
                 sent_response = self._proxy_regular_response(
@@ -274,6 +275,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     prepared.payload["messages"],
                     prepared.cache_namespace,
                     prepared.recovery_notice,
+                    prepared.record_response_scope,
                 )
             if not sent_response:
                 return
@@ -436,6 +438,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         request_messages: list[dict[str, Any]],
         cache_namespace: str,
         recovery_notice: str | None = None,
+        record_response_scope: str | None = None,
     ) -> bool:
         body = read_response_body(response)
         try:
@@ -446,6 +449,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 request_messages,
                 cache_namespace,
                 content_prefix=recovery_notice,
+                scope=record_response_scope,
             )
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             LOG.warning("failed to rewrite upstream JSON response: %s", exc)
@@ -476,6 +480,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         request_messages: list[dict[str, Any]],
         cache_namespace: str,
         recovery_notice: str | None = None,
+        record_response_scope: str | None = None,
     ) -> bool:
         sent_headers = self._send_response_headers(
             getattr(response, "status", 200),
@@ -496,38 +501,48 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             if self.config.cursor_display_reasoning
             else None
         )
-        scope = conversation_scope(request_messages, cache_namespace)
+        scope = (
+            record_response_scope
+            if record_response_scope is not None
+            else conversation_scope(request_messages, cache_namespace)
+        )
         finalized = False
         pending_recovery_notice = recovery_notice
-        while True:
-            try:
-                line = response.readline()
-            except (HTTPException, OSError) as exc:
-                LOG.warning("upstream streaming response read failed: %s", exc)
-                return False
-            if not line:
-                break
-            rewritten, finalized, pending_recovery_notice = self._rewrite_sse_line(
-                line,
-                original_model,
-                accumulator,
-                scope,
-                display_adapter,
-                pending_recovery_notice,
-            )
-            if not self._write_to_client(
-                rewritten, "sending streaming response chunk", flush=True
-            ):
-                return False
-            if finalized:
-                break
-
-        if not finalized:
-            if self.config.verbose:
-                log_json("model streaming assistant messages", accumulator.messages())
-            stored = accumulator.store_reasoning(self.reasoning_store, scope)
-            if stored:
-                LOG.info("stored %s streaming reasoning cache key(s)", stored)
+        try:
+            while True:
+                try:
+                    line = response.readline()
+                except (HTTPException, OSError) as exc:
+                    LOG.warning("upstream streaming response read failed: %s", exc)
+                    return False
+                if not line:
+                    break
+                rewritten, finalized, pending_recovery_notice = self._rewrite_sse_line(
+                    line,
+                    original_model,
+                    accumulator,
+                    scope,
+                    display_adapter,
+                    pending_recovery_notice,
+                )
+                if not self._write_to_client(
+                    rewritten, "sending streaming response chunk", flush=True
+                ):
+                    return False
+                if finalized:
+                    break
+        finally:
+            if not finalized:
+                if self.config.verbose:
+                    log_json(
+                        "model streaming assistant messages", accumulator.messages()
+                    )
+                stored = accumulator.store_reasoning(self.reasoning_store, scope)
+                if stored:
+                    LOG.info(
+                        "stored %s streaming reasoning cache key(s) before exit",
+                        stored,
+                    )
         return True
 
     def _rewrite_sse_line(

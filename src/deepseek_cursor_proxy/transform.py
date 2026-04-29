@@ -95,6 +95,7 @@ class PreparedRequest:
     recovered_reasoning_messages: int = 0
     recovery_dropped_messages: int = 0
     recovery_notice: str | None = None
+    record_response_scope: str | None = None
 
 
 def normalize_reasoning_effort(value: Any) -> str:
@@ -485,6 +486,8 @@ def prepare_upstream_request(
         repair_reasoning=thinking_enabled,
         keep_reasoning=not thinking_disabled,
     )
+    record_response_scope = conversation_scope(messages, cache_namespace)
+
     recovered_count = 0
     recovery_dropped_messages = 0
     recovery_notice = None
@@ -517,6 +520,7 @@ def prepare_upstream_request(
         recovered_reasoning_messages=recovered_count,
         recovery_dropped_messages=recovery_dropped_messages,
         recovery_notice=recovery_notice,
+        record_response_scope=record_response_scope,
     )
 
 
@@ -525,6 +529,7 @@ def record_response_reasoning(
     store: ReasoningStore | None,
     request_messages: list[dict[str, Any]],
     cache_namespace: str = "",
+    scope: str | None = None,
 ) -> int:
     if store is None:
         return 0
@@ -532,13 +537,15 @@ def record_response_reasoning(
     choices = response_payload.get("choices")
     if not isinstance(choices, list):
         return stored
-    scope = conversation_scope(request_messages, cache_namespace)
+    response_scope = scope if scope is not None else conversation_scope(
+        request_messages, cache_namespace
+    )
     for choice in choices:
         if not isinstance(choice, dict):
             continue
         message = choice.get("message")
         if isinstance(message, dict):
-            stored += store.store_assistant_message(message, scope)
+            stored += store.store_assistant_message(message, response_scope)
     return stored
 
 
@@ -549,13 +556,18 @@ def rewrite_response_body(
     request_messages: list[dict[str, Any]],
     cache_namespace: str = "",
     content_prefix: str | None = None,
+    scope: str | None = None,
 ) -> bytes:
     response_payload = json.loads(body.decode("utf-8"))
     if isinstance(response_payload, dict):
         if content_prefix:
             prefix_response_content(response_payload, content_prefix)
         record_response_reasoning(
-            response_payload, store, request_messages, cache_namespace
+            response_payload,
+            store,
+            request_messages,
+            cache_namespace,
+            scope=scope,
         )
         if "model" in response_payload:
             response_payload["model"] = original_model

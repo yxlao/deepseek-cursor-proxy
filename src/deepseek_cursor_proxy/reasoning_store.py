@@ -46,6 +46,17 @@ def tool_call_ids(message: dict[str, Any]) -> list[str]:
     return ids
 
 
+def tool_call_names(message: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for tool_call in message.get("tool_calls") or []:
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        if isinstance(function, dict) and function.get("name"):
+            names.append(str(function["name"]))
+    return names
+
+
 def message_signature(message: dict[str, Any]) -> str:
     tool_calls = [
         normalize_tool_call(tool_call)
@@ -172,6 +183,10 @@ class ReasoningStore:
             for tool_call in (message.get("tool_calls") or [])
             if isinstance(tool_call, dict)
         )
+        keys.extend(
+            f"scope:{scope}:tool_name:{tool_name}"
+            for tool_name in tool_call_names(message)
+        )
         for key in keys:
             self.put(key, reasoning, message)
         return len(keys)
@@ -190,6 +205,10 @@ class ReasoningStore:
             reasoning = self.get(
                 f"scope:{scope}:tool_call_signature:{tool_call_signature(tool_call)}"
             )
+            if reasoning is not None:
+                return reasoning
+        for tool_name in tool_call_names(message):
+            reasoning = self.get(f"scope:{scope}:tool_name:{tool_name}")
             if reasoning is not None:
                 return reasoning
         return None
