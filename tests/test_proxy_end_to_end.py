@@ -587,7 +587,7 @@ class ProxyEndToEndTests(unittest.TestCase):
         output = "\n".join(captured.output)
         self.assertEqual(status, 200)
         self.assertIn(
-            "┌ cursor   id=1 model=deepseek-v4-pro messages=1 tools=1",
+            "┌ cursor   index=1 model=deepseek-v4-pro messages=1 tools=1",
             output,
         )
         self.assertIn(

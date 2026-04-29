@@ -52,18 +52,18 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     reasoning_store: ReasoningStore
     trace_writer: TraceWriter | None
     _request_log_lock: threading.Lock
-    _next_request_log_id: int
+    _next_request_log_index: int
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._request_log_lock = threading.Lock()
-        self._next_request_log_id = 1
+        self._next_request_log_index = 1
 
-    def next_request_log_id(self) -> int:
+    def next_request_log_index(self) -> int:
         with self._request_log_lock:
-            request_id = self._next_request_log_id
-            self._next_request_log_id += 1
-        return request_id
+            request_index = self._next_request_log_index
+            self._next_request_log_index += 1
+        return request_index
 
 
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
@@ -108,7 +108,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         started = time.monotonic()
-        request_id = self.server.next_request_log_id()
+        request_index = self.server.next_request_log_index()
         request_path = urlparse(self.path).path
         trace = self._start_trace(request_path)
         if self.config.verbose:
@@ -319,7 +319,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 )
                 return
             log_request_lifecycle(
-                request_id=request_id,
+                request_index=request_index,
                 cursor_payload=payload,
                 prepared=prepared,
                 usage=sent_response.usage,
@@ -943,13 +943,13 @@ def usage_from_body(body: bytes) -> dict[str, Any] | None:
 
 def log_request_lifecycle(
     *,
-    request_id: int,
+    request_index: int,
     cursor_payload: dict[str, Any],
     prepared: PreparedRequest,
     usage: dict[str, Any] | None,
 ) -> None:
     block = request_lifecycle_block(
-        request_id=request_id,
+        request_index=request_index,
         cursor_payload=cursor_payload,
         prepared=prepared,
         usage=usage,
@@ -962,7 +962,7 @@ def log_request_lifecycle(
 
 def request_lifecycle_block(
     *,
-    request_id: int,
+    request_index: int,
     cursor_payload: dict[str, Any],
     prepared: PreparedRequest,
     usage: dict[str, Any] | None,
@@ -977,7 +977,7 @@ def request_lifecycle_block(
         [
             (
                 "┌ cursor   "
-                f"id={request_id} model={prepared.original_model} "
+                f"index={request_index} model={prepared.original_model} "
                 f"messages={format_count(cursor_messages)} "
                 f"tools={format_count(cursor_tools)}"
             ),
