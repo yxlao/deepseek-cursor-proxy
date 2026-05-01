@@ -13,6 +13,7 @@ from .reasoning_store import (
     conversation_scope,
     message_signature,
     tool_call_ids,
+    tool_call_names,
     tool_call_signature,
     turn_context_signature,
 )
@@ -383,6 +384,16 @@ def reasoning_lookup_keys(
         for tool_call in (message.get("tool_calls") or [])
         if isinstance(tool_call, dict)
     )
+    keys.extend(
+        {
+            "kind": "tool_name",
+            "function_name": tool_name,
+            "key": f"scope:{scope}:tool_name:{tool_name}",
+            "portable": False,
+            "hit": False,
+        }
+        for tool_name in tool_call_names(message)
+    )
     if cache_namespace and prior_messages is not None:
         turn_signature = turn_context_signature(prior_messages)
         keys.append(
@@ -427,6 +438,20 @@ def reasoning_lookup_keys(
             }
             for tool_call in (message.get("tool_calls") or [])
             if isinstance(tool_call, dict)
+        )
+        keys.extend(
+            {
+                "kind": "portable_tool_name",
+                "function_name": tool_name,
+                "key": (
+                    f"namespace:{cache_namespace}:turn:{turn_signature}:"
+                    f"tool_name:{tool_name}"
+                ),
+                "turn_context_signature": turn_signature,
+                "portable": True,
+                "hit": False,
+            }
+            for tool_name in tool_call_names(message)
         )
     return keys
 

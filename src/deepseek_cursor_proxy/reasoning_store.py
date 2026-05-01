@@ -46,6 +46,17 @@ def tool_call_ids(message: dict[str, Any]) -> list[str]:
     return ids
 
 
+def tool_call_names(message: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for tool_call in message.get("tool_calls") or []:
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        if isinstance(function, dict) and function.get("name"):
+            names.append(str(function["name"]))
+    return names
+
+
 def message_signature(message: dict[str, Any]) -> str:
     tool_calls = [
         normalize_tool_call(tool_call)
@@ -125,6 +136,13 @@ def scoped_reasoning_keys(message: dict[str, Any], scope: str) -> list[str]:
         for tool_call in (message.get("tool_calls") or [])
         if isinstance(tool_call, dict)
     )
+    # Recovery-of-last-resort key. Catches the case where a streaming response
+    # was interrupted (user pressed Stop) before the tool_call.id chunk arrived,
+    # so neither tool_call_id nor tool_call_signature (which canonicalizes
+    # arguments) survives the round-trip through Cursor's transcript.
+    keys.extend(
+        f"scope:{scope}:tool_name:{tool_name}" for tool_name in tool_call_names(message)
+    )
     return keys
 
 
@@ -151,6 +169,10 @@ def portable_reasoning_keys(
         f"tool_call_signature:{tool_call_signature(tool_call)}"
         for tool_call in (message.get("tool_calls") or [])
         if isinstance(tool_call, dict)
+    )
+    keys.extend(
+        f"namespace:{cache_namespace}:turn:{turn_signature}:" f"tool_name:{tool_name}"
+        for tool_name in tool_call_names(message)
     )
     return keys
 

@@ -679,54 +679,64 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         )
         finalized = False
         pending_recovery_notice = recovery_notice
-        while True:
-            try:
-                line = response.readline()
-            except (HTTPException, OSError) as exc:
-                LOG.warning("upstream streaming response read failed: %s", exc)
-                return ProxyResponseResult(False, usage)
-            if not line:
-                break
-            (
-                rewritten,
-                finalized,
-                pending_recovery_notice,
-                chunk_usage,
-            ) = self._rewrite_sse_line(
-                line,
-                original_model,
-                accumulator,
-                cache_namespace,
-                response_contexts,
-                display_adapter,
-                pending_recovery_notice,
-                trace,
-            )
-            if chunk_usage is not None:
-                usage = chunk_usage
-            if trace is not None:
-                trace.record_stream_chunk(line, rewritten)
-            if not self._write_to_client(
-                rewritten, "sending streaming response chunk", flush=True
-            ):
-                return ProxyResponseResult(False, usage)
-            if finalized:
-                break
-
-        if not finalized:
-            if self.config.verbose:
-                log_json("model streaming assistant messages", accumulator.messages())
-            stored = sum(
-                accumulator.store_reasoning(
-                    self.reasoning_store,
-                    scope,
+        try:
+            while True:
+                try:
+                    line = response.readline()
+                except (HTTPException, OSError) as exc:
+                    LOG.warning("upstream streaming response read failed: %s", exc)
+                    return ProxyResponseResult(False, usage)
+                if not line:
+                    break
+                (
+                    rewritten,
+                    finalized,
+                    pending_recovery_notice,
+                    chunk_usage,
+                ) = self._rewrite_sse_line(
+                    line,
+                    original_model,
+                    accumulator,
                     cache_namespace,
-                    prior_messages,
+                    response_contexts,
+                    display_adapter,
+                    pending_recovery_notice,
+                    trace,
                 )
-                for scope, prior_messages in response_contexts
-            )
-            if self.config.verbose and stored:
-                LOG.info("stored %s streaming reasoning cache key(s)", stored)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                if trace is not None:
+                    trace.record_stream_chunk(line, rewritten)
+                if not self._write_to_client(
+                    rewritten, "sending streaming response chunk", flush=True
+                ):
+                    return ProxyResponseResult(False, usage)
+                if finalized:
+                    break
+        finally:
+            # Store partial reasoning whenever the stream exits without
+            # the upstream's [DONE] terminator (client disconnect, upstream
+            # read failure, exception). Without this, a Stop pressed mid-stream
+            # would discard any reasoning the proxy received but never cached.
+            if not finalized:
+                if self.config.verbose:
+                    log_json(
+                        "model streaming assistant messages", accumulator.messages()
+                    )
+                stored = sum(
+                    accumulator.store_reasoning(
+                        self.reasoning_store,
+                        ctx_scope,
+                        cache_namespace,
+                        prior_messages,
+                    )
+                    for ctx_scope, prior_messages in response_contexts
+                )
+                if self.config.verbose and stored:
+                    LOG.info(
+                        "stored %s streaming reasoning cache key(s) before exit",
+                        stored,
+                    )
         return ProxyResponseResult(True, usage)
 
     def _rewrite_sse_line(

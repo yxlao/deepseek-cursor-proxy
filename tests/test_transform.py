@@ -715,5 +715,215 @@ class CrossModeAndModelTests(unittest.TestCase):
         )
 
 
+class StopMidStreamingToolCallTests(unittest.TestCase):
+    """Regression for the 'Stop pressed during streaming tool-call arguments'
+    scenario. When the upstream stream is cut off before the tool_call.id
+    chunk arrives, the cached message has tool_calls with no IDs. Cursor
+    synthesises its own ID for its bookkeeping, so the next request looks
+    nothing like the cached message at the id/signature/message-content
+    levels. The tool_name fallback is the only thing that can rescue this."""
+
+    def setUp(self) -> None:
+        self.store = ReasoningStore(":memory:")
+
+    def test_tool_name_fallback_restores_reasoning_when_id_missing(self) -> None:
+        # Turn 1 prepares an upstream request and caches a partial assistant
+        # message simulating a Stop before id arrived.
+        first_payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "u1"},
+            ],
+        }
+        first_prepared = prepare_upstream_request(
+            first_payload,
+            ProxyConfig(missing_reasoning_strategy="recover"),
+            self.store,
+        )
+
+        partial_response = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "Need to grep.",
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "grep_search",
+                                    "arguments": '{"q":',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        rewrite_response_body(
+            json.dumps(partial_response).encode("utf-8"),
+            original_model=first_prepared.original_model,
+            store=self.store,
+            request_messages=first_prepared.record_response_messages,
+            cache_namespace=first_prepared.cache_namespace,
+            scope=first_prepared.record_response_scope,
+            prior_messages=first_prepared.record_response_messages,
+            recording_contexts=first_prepared.record_response_contexts,
+        )
+
+        # Turn 2: Cursor saved the partial response with a synthesised id and
+        # its own best guess for the arguments.
+        second_payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "u1"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "cursor-synth-1",
+                            "type": "function",
+                            "function": {
+                                "name": "grep_search",
+                                "arguments": '{"q":"foo"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "cursor-synth-1",
+                    "content": "match",
+                },
+                {"role": "user", "content": "u2"},
+            ],
+        }
+        second_prepared = prepare_upstream_request(
+            second_payload,
+            ProxyConfig(missing_reasoning_strategy="recover"),
+            self.store,
+        )
+
+        self.assertEqual(second_prepared.patched_reasoning_messages, 1)
+        self.assertEqual(second_prepared.missing_reasoning_messages, 0)
+        self.assertIsNone(second_prepared.recovery_notice)
+        self.assertEqual(
+            second_prepared.payload["messages"][2]["reasoning_content"],
+            "Need to grep.",
+        )
+
+    def test_tool_name_keys_are_isolated_across_distinct_turns(self) -> None:
+        # Two separate turns each interrupt with the same function name.
+        # The strict scope already differs (each turn has more prior
+        # messages) so the two cached entries should not collide and the
+        # second turn's reasoning must not leak into the first turn's slot.
+        config = ProxyConfig(missing_reasoning_strategy="recover")
+
+        def cache_partial(payload: dict, reasoning: str, args_fragment: str) -> dict:
+            prepared = prepare_upstream_request(payload, config, self.store)
+            response = {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": reasoning,
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "grep_search",
+                                        "arguments": args_fragment,
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+            rewrite_response_body(
+                json.dumps(response).encode("utf-8"),
+                original_model=prepared.original_model,
+                store=self.store,
+                request_messages=prepared.record_response_messages,
+                cache_namespace=prepared.cache_namespace,
+                scope=prepared.record_response_scope,
+                prior_messages=prepared.record_response_messages,
+                recording_contexts=prepared.record_response_contexts,
+            )
+            return prepared
+
+        turn_a_payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "u-A"},
+            ],
+        }
+        cache_partial(turn_a_payload, "Reasoning A.", '{"q":')
+
+        turn_b_payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "u-A"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "synth-A",
+                            "type": "function",
+                            "function": {
+                                "name": "grep_search",
+                                "arguments": '{"q":"a"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "synth-A", "content": "ra"},
+                {"role": "user", "content": "u-B"},
+            ],
+        }
+        cache_partial(turn_b_payload, "Reasoning B.", '{"q":')
+
+        # Now look up turn A's assistant under its own scope. It must still
+        # return Reasoning A and never Reasoning B (no scope collision).
+        recovery_payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "u-A"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "synth-A",
+                            "type": "function",
+                            "function": {
+                                "name": "grep_search",
+                                "arguments": '{"q":"a"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "synth-A", "content": "ra"},
+                {"role": "user", "content": "u-A2"},
+            ],
+        }
+        prepared = prepare_upstream_request(recovery_payload, config, self.store)
+        self.assertEqual(
+            prepared.payload["messages"][2]["reasoning_content"],
+            "Reasoning A.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
