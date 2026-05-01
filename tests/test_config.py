@@ -121,7 +121,7 @@ class ConfigTests(unittest.TestCase):
                     [
                         "base_url: https://example.com/v1/",
                         "model: deepseek-v4-flash",
-                        "thinking: pass_through",
+                        "thinking: disabled",
                         "reasoning_effort: max",
                         "port: 9100",
                         "host: 0.0.0.0",
@@ -145,7 +145,7 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.upstream_base_url, "https://example.com/v1")
         self.assertEqual(config.upstream_model, "deepseek-v4-flash")
-        self.assertEqual(config.thinking, "pass-through")
+        self.assertEqual(config.thinking, "disabled")
         self.assertEqual(config.reasoning_effort, "max")
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 9100)

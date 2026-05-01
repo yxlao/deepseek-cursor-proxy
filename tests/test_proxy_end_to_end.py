@@ -542,7 +542,13 @@ class ProxyEndToEndTests(unittest.TestCase):
             second_cursor_request(include_reasoning=False),
         )
         self.assertEqual(status, 200)
-        self.assertEqual(second["choices"][0]["message"]["content"], FINAL_CONTENT)
+        self.assertEqual(
+            second["choices"][0]["message"]["content"],
+            "<details>\n<summary>Thinking</summary>\n\n"
+            + FINAL_REASONING
+            + "\n</details>\n\n"
+            + FINAL_CONTENT,
+        )
 
         status, third = post_json(
             f"{self.proxy.url}/v1/chat/completions",
@@ -733,10 +739,9 @@ class ProxyEndToEndTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 200)
-        self.assertTrue(
-            payload["choices"][0]["message"]["content"].startswith(
-                RECOVERY_NOTICE_CONTENT
-            )
+        self.assertIn(
+            RECOVERY_NOTICE_CONTENT,
+            payload["choices"][0]["message"]["content"],
         )
         self.assertEqual(
             [
@@ -821,6 +826,10 @@ class ProxyEndToEndTests(unittest.TestCase):
         )
         self.assertEqual(
             second_upstream_messages[2]["reasoning_content"], TOOL_REASONING
+        )
+        self.assertNotIn(
+            "deepseek-cursor-proxy",
+            second_upstream_messages[2].get("content", ""),
         )
 
 

@@ -292,3 +292,34 @@ class CursorReasoningDisplayAdapter:
         }
         if metadata:
             self._last_chunk_metadata.update(metadata)
+
+
+def fold_reasoning_into_content(
+    response_payload: dict[str, Any],
+    collapsible: bool,
+) -> None:
+    """Mirror `reasoning_content` into the visible `content` field for
+    non-streaming responses, matching the streaming `<details>` layout."""
+    block_start = (
+        COLLAPSIBLE_THINKING_BLOCK_START if collapsible else THINKING_BLOCK_START
+    )
+    block_end = COLLAPSIBLE_THINKING_BLOCK_END if collapsible else THINKING_BLOCK_END
+    choices = response_payload.get("choices")
+    if not isinstance(choices, list):
+        return
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        reasoning = message.get("reasoning_content")
+        if not isinstance(reasoning, str) or not reasoning:
+            continue
+        content = message.get("content")
+        message["content"] = (
+            block_start
+            + reasoning
+            + block_end
+            + (content if isinstance(content, str) else "")
+        )

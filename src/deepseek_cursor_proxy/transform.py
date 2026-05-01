@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
+import logging
 import re
 from typing import Any
 
@@ -15,6 +16,10 @@ from .reasoning_store import (
     tool_call_signature,
     turn_context_signature,
 )
+from .streaming import fold_reasoning_into_content
+
+
+LOG = logging.getLogger("deepseek_cursor_proxy")
 
 
 SUPPORTED_REQUEST_FIELDS = {
@@ -83,10 +88,6 @@ CURSOR_THINKING_BLOCK_RE = re.compile(
 )
 
 RECOVERY_NOTICE_TEXT = "[deepseek-cursor-proxy] Refreshed reasoning_content history."
-LEGACY_RECOVERY_NOTICE_TEXT = (
-    "Note: recovered this DeepSeek chat because older tool-call reasoning "
-    "was unavailable; continuing with recent context only."
-)
 RECOVERY_NOTICE_CONTENT = f"{RECOVERY_NOTICE_TEXT}\n\n"
 RECOVERY_SYSTEM_CONTENT = (
     "deepseek-cursor-proxy recovered this request because older DeepSeek "
@@ -460,8 +461,31 @@ def has_recovery_notice(message: dict[str, Any]) -> bool:
     return (
         message.get("role") == "assistant"
         and isinstance(content, str)
-        and content.startswith((RECOVERY_NOTICE_TEXT, LEGACY_RECOVERY_NOTICE_TEXT))
+        and content.startswith(RECOVERY_NOTICE_TEXT)
     )
+
+
+def strip_recovery_notice_for_upstream(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Cursor echoes the proxy's recovery notice back to us in later turns.
+    The notice serves as a boundary marker for the proxy, but DeepSeek must
+    not see proxy-generated prose. Return a copy with assistant prefixes
+    stripped; leave the input untouched so cache scopes/recording contexts
+    keep matching the with-prefix history that Cursor will send next time."""
+    stripped: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") != "assistant":
+            stripped.append(message)
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or not content.startswith(RECOVERY_NOTICE_TEXT):
+            stripped.append(message)
+            continue
+        cleaned = dict(message)
+        cleaned["content"] = content[len(RECOVERY_NOTICE_TEXT) :].lstrip("\r\n")
+        stripped.append(cleaned)
+    return stripped
 
 
 def leading_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -628,6 +652,11 @@ def assistant_needs_reasoning_for_tool_context(
 def upstream_model_for(original_model: str, config: ProxyConfig) -> str:
     if original_model.startswith("deepseek-"):
         return original_model
+    LOG.warning(
+        "rewriting non-DeepSeek model %r to configured fallback %r",
+        original_model,
+        config.upstream_model,
+    )
     return config.upstream_model
 
 
@@ -688,6 +717,16 @@ def prepare_upstream_request(
     prepared = {
         key: value for key, value in payload.items() if key in SUPPORTED_REQUEST_FIELDS
     }
+    dropped_fields = sorted(
+        key
+        for key in payload.keys()
+        if key not in SUPPORTED_REQUEST_FIELDS
+        and key not in {"max_completion_tokens", "functions", "function_call"}
+    )
+    if dropped_fields:
+        LOG.warning(
+            "dropping unsupported request field(s): %s", ", ".join(dropped_fields)
+        )
     if "max_tokens" not in prepared and "max_completion_tokens" in payload:
         prepared["max_tokens"] = payload["max_completion_tokens"]
 
@@ -719,14 +758,9 @@ def prepare_upstream_request(
         if tool_choice is not None:
             prepared["tool_choice"] = tool_choice
 
-    if config.thinking != "pass-through":
-        prepared["thinking"] = {"type": config.thinking}
-
-    thinking = prepared.get("thinking")
-    thinking_enabled = isinstance(thinking, dict) and thinking.get("type") == "enabled"
-    thinking_disabled = (
-        isinstance(thinking, dict) and thinking.get("type") == "disabled"
-    )
+    prepared["thinking"] = {"type": config.thinking}
+    thinking_enabled = config.thinking == "enabled"
+    thinking_disabled = config.thinking == "disabled"
     if thinking_enabled:
         prepared["reasoning_effort"] = normalize_reasoning_effort(
             prepared.get("reasoning_effort") or config.reasoning_effort
@@ -797,12 +831,12 @@ def prepare_upstream_request(
             keep_reasoning=not thinking_disabled,
         )
         reasoning_diagnostics.extend(latest_diagnostics)
-    prepared["messages"] = messages
     active_record_response_scope = conversation_scope(messages, cache_namespace)
     record_response_contexts = response_recording_contexts(
         (record_response_scope, record_response_messages),
         (active_record_response_scope, messages),
     )
+    prepared["messages"] = strip_recovery_notice_for_upstream(messages)
 
     return PreparedRequest(
         payload=prepared,
@@ -874,6 +908,8 @@ def rewrite_response_body(
     scope: str | None = None,
     prior_messages: list[dict[str, Any]] | None = None,
     recording_contexts: list[tuple[str, list[dict[str, Any]]]] | None = None,
+    display_reasoning: bool = False,
+    collapsible_reasoning: bool = True,
 ) -> bytes:
     response_payload = json.loads(body.decode("utf-8"))
     if isinstance(response_payload, dict):
@@ -888,6 +924,8 @@ def rewrite_response_body(
             prior_messages=prior_messages,
             recording_contexts=recording_contexts,
         )
+        if display_reasoning:
+            fold_reasoning_into_content(response_payload, collapsible_reasoning)
         if "model" in response_payload:
             response_payload["model"] = original_model
     return json.dumps(
