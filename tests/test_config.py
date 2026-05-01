@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from deepseek_cursor_proxy.config import (
+    DEFAULT_COLLAPSIBLE_REASONING,
     DEFAULT_MISSING_REASONING_STRATEGY,
     DEFAULT_NGROK,
     DEFAULT_PORT,
@@ -39,6 +40,10 @@ class ConfigTests(unittest.TestCase):
                 home / ".deepseek-cursor-proxy" / "reasoning_content.sqlite3",
             )
             self.assertEqual(ProxyConfig().ngrok, DEFAULT_NGROK)
+            self.assertEqual(
+                ProxyConfig().collapsible_reasoning,
+                DEFAULT_COLLAPSIBLE_REASONING,
+            )
             self.assertIsNone(ProxyConfig().trace_dir)
 
     def test_missing_default_config_file_is_populated(self) -> None:
@@ -67,9 +72,18 @@ class ConfigTests(unittest.TestCase):
                 config_text,
             )
             self.assertIn(f"ngrok: {str(DEFAULT_NGROK).lower()}", config_text)
+            self.assertIn(
+                "collasible_reasoning: "
+                f"{str(DEFAULT_COLLAPSIBLE_REASONING).lower()}",
+                config_text,
+            )
             self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
             self.assertEqual(config.upstream_model, DEFAULT_UPSTREAM_MODEL)
             self.assertEqual(config.ngrok, DEFAULT_NGROK)
+            self.assertEqual(
+                config.collapsible_reasoning,
+                DEFAULT_COLLAPSIBLE_REASONING,
+            )
             self.assertEqual(
                 config.missing_reasoning_strategy, DEFAULT_MISSING_REASONING_STRATEGY
             )
@@ -117,6 +131,7 @@ class ConfigTests(unittest.TestCase):
                         "max_request_body_bytes: 1234",
                         "cors: true",
                         "display_reasoning: false",
+                        "collasible_reasoning: false",
                         f"reasoning_content_path: {reasoning_content_path}",
                         "missing_reasoning_strategy: reject",
                         "reasoning_cache_max_age_seconds: 60",
@@ -139,7 +154,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.request_timeout, 123.5)
         self.assertEqual(config.max_request_body_bytes, 1234)
         self.assertTrue(config.cors)
-        self.assertFalse(config.cursor_display_reasoning)
+        self.assertFalse(config.display_reasoning)
+        self.assertFalse(config.collapsible_reasoning)
         self.assertEqual(config.reasoning_content_path, reasoning_content_path)
         self.assertEqual(config.missing_reasoning_strategy, "reject")
         self.assertEqual(config.reasoning_cache_max_age_seconds, 60)
@@ -155,6 +171,7 @@ class ConfigTests(unittest.TestCase):
                         "missing_reasoning_strategy: maybe",
                         "port: nope",
                         "verbose: maybe",
+                        "collasible_reasoning: maybe",
                     ]
                 ),
                 encoding="utf-8",
@@ -169,6 +186,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.port, DEFAULT_PORT)
         self.assertEqual(config.ngrok, DEFAULT_NGROK)
         self.assertEqual(config.verbose, DEFAULT_VERBOSE)
+        self.assertEqual(
+            config.collapsible_reasoning,
+            DEFAULT_COLLAPSIBLE_REASONING,
+        )
 
     def test_relative_reasoning_content_path_in_config_is_relative_to_config_file(
         self,
@@ -204,7 +225,16 @@ class ConfigTests(unittest.TestCase):
 
             config = ProxyConfig.from_file(config_path=config_path)
 
-        self.assertFalse(config.cursor_display_reasoning)
+        self.assertFalse(config.display_reasoning)
+
+    def test_collapsible_reasoning_can_use_corrected_config_key(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text("collapsible_reasoning: false\n", encoding="utf-8")
+
+            config = ProxyConfig.from_file(config_path=config_path)
+
+        self.assertFalse(config.collapsible_reasoning)
 
     def test_invalid_yaml_config_raises_value_error(self) -> None:
         with TemporaryDirectory() as temp_dir:

@@ -21,7 +21,8 @@ DEFAULT_UPSTREAM_BASE_URL = "https://api.deepseek.com"
 DEFAULT_UPSTREAM_MODEL = "deepseek-v4-pro"
 DEFAULT_THINKING = "enabled"
 DEFAULT_REASONING_EFFORT = "high"
-DEFAULT_CURSOR_DISPLAY_REASONING = True
+DEFAULT_DISPLAY_REASONING = True
+DEFAULT_COLLAPSIBLE_REASONING = True
 DEFAULT_NGROK = True
 DEFAULT_VERBOSE = False
 DEFAULT_REQUEST_TIMEOUT = 300.0
@@ -43,7 +44,8 @@ base_url: {DEFAULT_UPSTREAM_BASE_URL}
 model: {DEFAULT_UPSTREAM_MODEL}
 thinking: {DEFAULT_THINKING}
 reasoning_effort: {DEFAULT_REASONING_EFFORT}
-display_reasoning: {str(DEFAULT_CURSOR_DISPLAY_REASONING).lower()}
+display_reasoning: {str(DEFAULT_DISPLAY_REASONING).lower()}
+collasible_reasoning: {str(DEFAULT_COLLAPSIBLE_REASONING).lower()}
 
 host: {DEFAULT_HOST}
 port: {DEFAULT_PORT}
@@ -101,6 +103,14 @@ def resolve_config_path(config_path: str | Path | None) -> Path:
 
 def setting_value(settings: Mapping[str, Any], key: str) -> Any:
     return settings.get(key, MISSING)
+
+
+def setting_value_any(settings: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = setting_value(settings, key)
+        if value is not MISSING:
+            return value
+    return MISSING
 
 
 def as_str(value: Any, default: str) -> str:
@@ -190,7 +200,8 @@ class ProxyConfig:
     missing_reasoning_strategy: str = DEFAULT_MISSING_REASONING_STRATEGY
     reasoning_cache_max_age_seconds: int = DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS
     reasoning_cache_max_rows: int = DEFAULT_REASONING_CACHE_MAX_ROWS
-    cursor_display_reasoning: bool = DEFAULT_CURSOR_DISPLAY_REASONING
+    display_reasoning: bool = DEFAULT_DISPLAY_REASONING
+    collapsible_reasoning: bool = DEFAULT_COLLAPSIBLE_REASONING
     cors: bool = DEFAULT_CORS
     verbose: bool = DEFAULT_VERBOSE
     ngrok: bool = DEFAULT_NGROK
@@ -250,9 +261,17 @@ class ProxyConfig:
                 setting_value(settings, "reasoning_cache_max_rows"),
                 DEFAULT_REASONING_CACHE_MAX_ROWS,
             ),
-            cursor_display_reasoning=as_bool(
+            display_reasoning=as_bool(
                 setting_value(settings, "display_reasoning"),
-                DEFAULT_CURSOR_DISPLAY_REASONING,
+                DEFAULT_DISPLAY_REASONING,
+            ),
+            collapsible_reasoning=as_bool(
+                setting_value_any(
+                    settings,
+                    "collasible_reasoning",
+                    "collapsible_reasoning",
+                ),
+                DEFAULT_COLLAPSIBLE_REASONING,
             ),
             cors=as_bool(
                 setting_value(settings, "cors"),
