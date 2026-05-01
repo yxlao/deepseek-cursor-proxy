@@ -1,12 +1,11 @@
-"""Integration tests adapted from scripts/audit_protocol_compliance.py.
+"""End-to-end protocol tests against an in-process strict fake DeepSeek.
 
-A small in-process "fake DeepSeek" upstream strictly enforces the protocol
-contract from docs/thinking-mode-tool-call-flow.md: every assistant message
-that participated in a tool-calling turn must carry `reasoning_content`,
-otherwise the upstream returns HTTP 400 — the same error real DeepSeek emits.
-The proxy is booted in-process and the canonical four-turn tool-call loop is
-walked end-to-end. If the proxy is protocol-compliant, every turn succeeds;
-otherwise the upstream short-circuits with 400 and the test fails fast.
+The fake upstream rejects with HTTP 400 (the same error real DeepSeek emits)
+whenever an assistant message that participated in a tool-calling turn lacks
+`reasoning_content`. Each test boots the proxy, walks a request scenario,
+and asserts what the upstream actually saw. If the proxy is protocol-
+compliant every turn succeeds; otherwise the upstream short-circuits with
+400 and the test fails fast.
 """
 
 from __future__ import annotations
