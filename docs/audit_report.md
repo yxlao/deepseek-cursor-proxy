@@ -3,6 +3,7 @@
 **Auditors:** Claude (Opus 4.7) and Codex
 **Date:** 2026-05-01
 **Scope:**
+
 - Protocol reference: [`docs/thinking-tools.md`](thinking-tools.md) (mirroring <https://api-docs.deepseek.com/guides/thinking_mode>)
 - Implementation reviewed: every Python module under [`src/deepseek_cursor_proxy/`](../src/deepseek_cursor_proxy/) — `transform.py`, `reasoning_store.py`, `streaming.py`, `server.py`, `config.py`, `trace.py`, `tunnel.py`.
 - Test surface: the existing `tests/` suite (93 tests).
@@ -39,33 +40,33 @@ The audit found:
 
 1. **`thinking="pass-through"` + omitted client `thinking` field misses
    DeepSeek's default-enabled behaviour** — repair is gated on the proxy
-   *seeing* an explicit `thinking: enabled`, so a client that relies on
-   DeepSeek's default could trigger upstream 400s. *(Severity: High in
-   pass-through deployments; not exercised in default Cursor mode.)*
+   _seeing_ an explicit `thinking: enabled`, so a client that relies on
+   DeepSeek's default could trigger upstream 400s. _(Severity: High in
+   pass-through deployments; not exercised in default Cursor mode.)_
 2. **Recovery-notice text mismatch with older trace shapes** — current
    `transform.py` recognises only two recovery-notice strings. The captured
-   `20260429T134418.628275Z` trace uses a *third*, slightly older variant
+   `20260429T134418.628275Z` trace uses a _third_, slightly older variant
    that today's code would no longer treat as a recovery boundary, causing
-   cascading re-recovery on replay. *(Severity: High for users with stored
+   cascading re-recovery on replay. _(Severity: High for users with stored
    transcripts from older proxy versions; the runtime that produced the
-   trace had handled it correctly at the time.)*
+   trace had handled it correctly at the time.)_
 3. **Recovery notices leak into upstream `content`** — when the proxy
-   prefixes its recovery message into the *response* `content`, that string
+   prefixes its recovery message into the _response_ `content`, that string
    is later echoed back by Cursor, and the proxy then forwards it upstream
-   as part of the assistant message that DeepSeek "wrote". *(Severity:
-   Medium — works in practice but is not exact replay.)*
+   as part of the assistant message that DeepSeek "wrote". _(Severity:
+   Medium — works in practice but is not exact replay.)_
 4. **Default-config policy overrides request-level `thinking`** — outside
    pass-through mode, any client-supplied `thinking` field is overwritten
    with the configured value. Intentional for Cursor; surprising for a
-   general-purpose OpenAI-compatible proxy. *(Severity: Low/Medium.)*
+   general-purpose OpenAI-compatible proxy. _(Severity: Low/Medium.)_
 5. **Anthropic-shape `output_config.effort` is not implemented** — only the
-   OpenAI-compatible shape is. *(Severity: Low; out of scope for Cursor.)*
+   OpenAI-compatible shape is. _(Severity: Low; out of scope for Cursor.)_
 6. **Non-streaming responses don't mirror reasoning into a `<details>`
-   block** — only streamed responses do. *(Severity: Low; the streaming-only
-   policy isn't documented.)*
+   block** — only streamed responses do. _(Severity: Low; the streaming-only
+   policy isn't documented.)_
 7. **`assistant_needs_reasoning_for_tool_context` treats `system` as a
    boundary** even though the doc phrases the rule in terms of `user`
-   boundaries. *(Severity: Low; no instances seen in real trace.)*
+   boundaries. _(Severity: Low; no instances seen in real trace.)_
 
 Items 1, 2, 3 are the only items with real protocol consequences in
 production; 4–7 are policy/design observations or low-probability edge
@@ -146,20 +147,20 @@ Replayed the 21 `request-*.json` files from
 `trace-dumps/20260429T134418.628275Z-pid80943` through a stricter checker
 over `transform.upstream_request_body`:
 
-| Check | Result |
-| --- | ---: |
-| Requests audited | 21 |
-| Completed HTTP 200 requests | 21 |
-| Cursor messages in trace | 612 |
-| Upstream messages sent to DeepSeek | 279 |
-| Assistant messages requiring `reasoning_content` | 96 |
-| Required assistant messages **missing** `reasoning_content` | **0** |
-| Assistant messages with `tool_calls` | 80 |
-| Tool result messages | 87 |
-| Tool result ID/order mismatches | 0 |
-| Unsupported upstream request keys found by checker | 0 |
-| Requests with unexpected `thinking` or `reasoning_effort` | 0 |
-| Forwarded ignored sampling params found | 0 |
+| Check                                                       | Result |
+| ----------------------------------------------------------- | -----: |
+| Requests audited                                            |     21 |
+| Completed HTTP 200 requests                                 |     21 |
+| Cursor messages in trace                                    |    612 |
+| Upstream messages sent to DeepSeek                          |    279 |
+| Assistant messages requiring `reasoning_content`            |     96 |
+| Required assistant messages **missing** `reasoning_content` |  **0** |
+| Assistant messages with `tool_calls`                        |     80 |
+| Tool result messages                                        |     87 |
+| Tool result ID/order mismatches                             |      0 |
+| Unsupported upstream request keys found by checker          |      0 |
+| Requests with unexpected `thinking` or `reasoning_effort`   |      0 |
+| Forwarded ignored sampling params found                     |      0 |
 
 Captured trace behaviour:
 
@@ -172,31 +173,31 @@ Captured trace behaviour:
 
 **The captured runtime sent only valid DeepSeek tool-call requests — no
 400s — for the entire 21-request session.** However, replaying the same
-Cursor inputs through current `transform.py` does *not* preserve that
+Cursor inputs through current `transform.py` does _not_ preserve that
 boundary continuation (see Finding 2 below).
 
 ---
 
 ## 3. Compliance Matrix
 
-| # | Protocol claim | Implementation status | Evidence |
-|---|---|---|---|
-| 1 | Request toggle: `extra_body={"thinking": {"type": "enabled"}}` | Aligned for default config; see Finding 1 for pass-through edge | `transform.py:722-730` injects `prepared["thinking"] = {"type": <config>}` whenever `config.thinking != "pass-through"`. |
-| 2 | Toggle off via `{"type": "disabled"}` | Aligned (audit Case 3) | Disabled mode propagates `keep_reasoning=False` into `normalize_message()` so `reasoning_content` is stripped (`transform.py:265-266`). |
-| 3 | Thinking mode is **enabled by default** at DeepSeek | Aligned only when proxy injects `enabled` explicitly; **gap in pass-through** | Finding 1 below. `thinking_enabled` is true only when `prepared["thinking"] == {"type": "enabled"}` (`transform.py:726`). |
-| 4 | `reasoning_effort` supports `high` and `max`; aliases `low`/`medium` → `high`, `xhigh` → `max` | Aligned | `EFFORT_ALIASES` (`transform.py:64-70`) implements the mapping; applied only when thinking is enabled (`transform.py:730-733`). |
-| 5 | Anthropic-shape `output_config.effort` | Not implemented (Finding 5) | `output_config` is not in `SUPPORTED_REQUEST_FIELDS`. Out of scope for Cursor's OpenAI-compatible flow. |
-| 6 | Output: assistant message has sibling `reasoning_content` and `content` | Aligned | `streaming.py:25-34` and `transform.py:867-895` both treat them as siblings. The only mutations are: prefix the recovery notice on `content`, mirror reasoning into `<details>` in streaming `content`, replace `model` with the original model. |
-| 7 | Sampling params (`temperature`, `top_p`, `presence_penalty`, `frequency_penalty`) accepted but ignored in thinking mode | Aligned | `SUPPORTED_REQUEST_FIELDS` (`transform.py:20-38`) whitelists all four; pass through verbatim. Trace audit confirmed zero forwarded sampling params (none were sent by Cursor; the proxy would have forwarded them if present). |
-| 8 | If a tool call happened during a user turn, prior tool-call assistant `reasoning_content` AND final answer `reasoning_content` must be re-sent | Aligned (audit Case 1; trace) | `assistant_needs_reasoning_for_tool_context()` (`transform.py:613-625`) flags both cases; repair runs in `normalize_message()` (`transform.py:265-301`). |
-| 9 | If no tool call happened between two user messages, prior reasoning is optional and ignored | Aligned | Same predicate returns `False` for plain assistants; `test_does_not_report_missing_reasoning_for_plain_chat_history` covers it. |
-| 10 | Tool-call assistant shape `{role, content, reasoning_content, tool_calls:[{id, type, function}]}` | Aligned | `normalize_tool_call()` (`transform.py:157-178`); empty strings preserved as present. |
-| 11 | Tool result shape `{role: "tool", tool_call_id, content}` | Aligned | `ROLE_MESSAGE_FIELDS["tool"]` (`transform.py:50-62`); legacy `role: "function"` is converted; trace shows zero ID mismatches. The proxy does not validate every result ID matches a pending tool call — minor. |
-| 12 | Non-streaming response: preserve assistant message including `content`, `reasoning_content`, `tool_calls` | Aligned | `rewrite_response_body()` (`transform.py:867-895`) only rewrites `model`, optionally prefixes recovery notice on `content`, and stores reasoning. |
-| 13 | Streaming response: accumulate `reasoning_content` and `content` deltas separately | Aligned (audit Case 5) | `StreamAccumulator.ingest_chunk()` (`streaming.py:42-73`); stored on `[DONE]` (`server.py:715-728`) plus end-of-loop fallback (`server.py:683-696`). |
-| 14 | Streamed tool-call reasoning available before next request | Aligned | `store_ready_reasoning()` (`streaming.py:110-139`) stores once tool-call IDs exist, even before `[DONE]`. Existing `test_streaming_tool_reasoning_is_available_before_done` covers it. |
-| 15 | Cache keys isolate conversations across users / configurations | Aligned (audit Case 7) | Scope = SHA-256 of canonical conversation prefix excluding `reasoning_content`; namespace mixes upstream URL, model family, thinking config, reasoning_effort, and Authorization hash (`reasoning_store.py:86-92`, `transform.py:640-660`). |
-| 16 | Field legend: `reasoning_content`/`content`/`tool_calls`/`tool` used verbatim | Aligned | All field names match the doc; empty `reasoning_content` (`""`) is treated as a present value, not missing (`test_empty_reasoning_content_is_stored_as_present_value`). |
+| #   | Protocol claim                                                                                                                                 | Implementation status                                                         | Evidence                                                                                                                                                                                                                                         |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Request toggle: `extra_body={"thinking": {"type": "enabled"}}`                                                                                 | Aligned for default config; see Finding 1 for pass-through edge               | `transform.py:722-730` injects `prepared["thinking"] = {"type": <config>}` whenever `config.thinking != "pass-through"`.                                                                                                                         |
+| 2   | Toggle off via `{"type": "disabled"}`                                                                                                          | Aligned (audit Case 3)                                                        | Disabled mode propagates `keep_reasoning=False` into `normalize_message()` so `reasoning_content` is stripped (`transform.py:265-266`).                                                                                                          |
+| 3   | Thinking mode is **enabled by default** at DeepSeek                                                                                            | Aligned only when proxy injects `enabled` explicitly; **gap in pass-through** | Finding 1 below. `thinking_enabled` is true only when `prepared["thinking"] == {"type": "enabled"}` (`transform.py:726`).                                                                                                                        |
+| 4   | `reasoning_effort` supports `high` and `max`; aliases `low`/`medium` → `high`, `xhigh` → `max`                                                 | Aligned                                                                       | `EFFORT_ALIASES` (`transform.py:64-70`) implements the mapping; applied only when thinking is enabled (`transform.py:730-733`).                                                                                                                  |
+| 5   | Anthropic-shape `output_config.effort`                                                                                                         | Not implemented (Finding 5)                                                   | `output_config` is not in `SUPPORTED_REQUEST_FIELDS`. Out of scope for Cursor's OpenAI-compatible flow.                                                                                                                                          |
+| 6   | Output: assistant message has sibling `reasoning_content` and `content`                                                                        | Aligned                                                                       | `streaming.py:25-34` and `transform.py:867-895` both treat them as siblings. The only mutations are: prefix the recovery notice on `content`, mirror reasoning into `<details>` in streaming `content`, replace `model` with the original model. |
+| 7   | Sampling params (`temperature`, `top_p`, `presence_penalty`, `frequency_penalty`) accepted but ignored in thinking mode                        | Aligned                                                                       | `SUPPORTED_REQUEST_FIELDS` (`transform.py:20-38`) whitelists all four; pass through verbatim. Trace audit confirmed zero forwarded sampling params (none were sent by Cursor; the proxy would have forwarded them if present).                   |
+| 8   | If a tool call happened during a user turn, prior tool-call assistant `reasoning_content` AND final answer `reasoning_content` must be re-sent | Aligned (audit Case 1; trace)                                                 | `assistant_needs_reasoning_for_tool_context()` (`transform.py:613-625`) flags both cases; repair runs in `normalize_message()` (`transform.py:265-301`).                                                                                         |
+| 9   | If no tool call happened between two user messages, prior reasoning is optional and ignored                                                    | Aligned                                                                       | Same predicate returns `False` for plain assistants; `test_does_not_report_missing_reasoning_for_plain_chat_history` covers it.                                                                                                                  |
+| 10  | Tool-call assistant shape `{role, content, reasoning_content, tool_calls:[{id, type, function}]}`                                              | Aligned                                                                       | `normalize_tool_call()` (`transform.py:157-178`); empty strings preserved as present.                                                                                                                                                            |
+| 11  | Tool result shape `{role: "tool", tool_call_id, content}`                                                                                      | Aligned                                                                       | `ROLE_MESSAGE_FIELDS["tool"]` (`transform.py:50-62`); legacy `role: "function"` is converted; trace shows zero ID mismatches. The proxy does not validate every result ID matches a pending tool call — minor.                                   |
+| 12  | Non-streaming response: preserve assistant message including `content`, `reasoning_content`, `tool_calls`                                      | Aligned                                                                       | `rewrite_response_body()` (`transform.py:867-895`) only rewrites `model`, optionally prefixes recovery notice on `content`, and stores reasoning.                                                                                                |
+| 13  | Streaming response: accumulate `reasoning_content` and `content` deltas separately                                                             | Aligned (audit Case 5)                                                        | `StreamAccumulator.ingest_chunk()` (`streaming.py:42-73`); stored on `[DONE]` (`server.py:715-728`) plus end-of-loop fallback (`server.py:683-696`).                                                                                             |
+| 14  | Streamed tool-call reasoning available before next request                                                                                     | Aligned                                                                       | `store_ready_reasoning()` (`streaming.py:110-139`) stores once tool-call IDs exist, even before `[DONE]`. Existing `test_streaming_tool_reasoning_is_available_before_done` covers it.                                                           |
+| 15  | Cache keys isolate conversations across users / configurations                                                                                 | Aligned (audit Case 7)                                                        | Scope = SHA-256 of canonical conversation prefix excluding `reasoning_content`; namespace mixes upstream URL, model family, thinking config, reasoning_effort, and Authorization hash (`reasoning_store.py:86-92`, `transform.py:640-660`).      |
+| 16  | Field legend: `reasoning_content`/`content`/`tool_calls`/`tool` used verbatim                                                                  | Aligned                                                                       | All field names match the doc; empty `reasoning_content` (`""`) is treated as a present value, not missing (`test_empty_reasoning_content_is_stored_as_present_value`).                                                                          |
 
 ---
 
@@ -221,23 +222,27 @@ True` only when `prepared["thinking"]` is a dict with `type == "enabled"`
 (`transform.py:760`) are gated on that flag.
 
 **Impact:** With `ProxyConfig(thinking="pass-through")` and a client request
-that *omits* `thinking`, the proxy forwards no `thinking` field, DeepSeek
+that _omits_ `thinking`, the proxy forwards no `thinking` field, DeepSeek
 applies its default (enabled), but the proxy's repair logic is off — so a
 Cursor-style tool-call history without `reasoning_content` flows upstream
 unmodified and triggers the documented 400.
 
 **Evidence:**
+
 ```
 $ uv run python scripts/audit_deepseek_protocol.py
 OBSERVE pass-through mode treats an omitted thinking field as non-thinking;
         DeepSeek's documented default is thinking enabled.
 ```
+
 Audit Case 4 in the strict-fake harness directly verifies that the proxy
 sends no `thinking` key when the client omits it under pass-through:
+
 ```
 [PASS] no thinking key when client omits it in pass-through
 ```
-The remaining gap is that *repair* doesn't run in this state.
+
+The remaining gap is that _repair_ doesn't run in this state.
 
 **Recommendation:** treat omitted `thinking` as enabled for repair purposes
 in pass-through mode (still don't inject a `thinking` field upstream), or
@@ -251,16 +256,19 @@ reasoning repair active. Add a regression test for pass-through + omitted
 
 **Background:** `transform.has_recovery_notice()` recognises only two
 prefixes today:
+
 - `"[deepseek-cursor-proxy] Refreshed reasoning_content history."` (current)
 - `"Note: recovered this DeepSeek chat because older tool-call reasoning was
-  unavailable; continuing with recent context only."` (legacy)
+unavailable; continuing with recent context only."` (legacy)
 
 **Trace evidence:** the captured session `20260429T134418.628275Z-pid80943`
-contains a *third* notice variant:
+contains a _third_ notice variant:
+
 ```
 [deepseek-cursor-proxy] Recovered this DeepSeek chat because older tool-call
 reasoning was unavailable; continuing with recent context only.
 ```
+
 `trace.py` still recognises this older prefix in
 `message_summaries.has_recovery_notice` (`trace.py:108-112`); `transform.py`
 does not.
@@ -269,18 +277,18 @@ does not.
 current `prepare_upstream_request()` produces:
 
 | Request | Captured upstream msgs | Replay upstream msgs | Replay recovered | Replay dropped | Boundary detected? |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 13 | 3 | 3 | 9 | 38 | false |
-| 14 | 5 | 3 | 9 | 40 | false |
-| 15 | 7 | 3 | 9 | 42 | false |
-| 16 | 9 | 3 | 9 | 44 | false |
-| 17 | 11 | 3 | 9 | 46 | false |
-| 18 | 13 | 3 | 9 | 48 | false |
-| 19 | 15 | 3 | 9 | 50 | false |
-| 20 | 17 | 3 | 9 | 52 | false |
-| 21 | 19 | 3 | 9 | 54 | false |
+| ------- | ---------------------: | -------------------: | ---------------: | -------------: | ------------------ |
+| 13      |                      3 |                    3 |                9 |             38 | false              |
+| 14      |                      5 |                    3 |                9 |             40 | false              |
+| 15      |                      7 |                    3 |                9 |             42 | false              |
+| 16      |                      9 |                    3 |                9 |             44 | false              |
+| 17      |                     11 |                    3 |                9 |             46 | false              |
+| 18      |                     13 |                    3 |                9 |             48 | false              |
+| 19      |                     15 |                    3 |                9 |             50 | false              |
+| 20      |                     17 |                    3 |                9 |             52 | false              |
+| 21      |                     19 |                    3 |                9 |             54 | false              |
 
-The captured runtime correctly *continued* the recovered chain after
+The captured runtime correctly _continued_ the recovered chain after
 request 13 (preserving 5/7/9/… upstream messages); current code re-recovers
 every request back to the latest user message. This avoids 400s but loses
 the active tool-call reasoning chain — directly contrary to the protocol's
@@ -310,6 +318,7 @@ example from request 14:
 ```
 
 **Impact:**
+
 - Not exact protocol replay — DeepSeek's example flow appends
   `response.choices[0].message`, but this `content` was generated by the
   proxy.
@@ -374,7 +383,7 @@ responses, or document the streaming-only scope.
 **Severity: Low (no instances in real trace).**
 
 **Behaviour:** `assistant_needs_reasoning_for_tool_context()` stops scanning
-backward at any `user` *or* `system` message (`transform.py:619-624`).
+backward at any `user` _or_ `system` message (`transform.py:619-624`).
 
 **Protocol text:** the doc phrases the boundary as "between two `user`
 messages." It does not say a `system` message ends a tool-call turn.
@@ -400,7 +409,7 @@ status code for proxy-detected gaps. Worth documenting.
 When required `reasoning_content` is unavailable, recover mode trims to the
 latest user request, prepends a recovery-system message, and prefixes the
 Cursor response with a notice (`transform.py:523-610`). The truncated
-request *is* protocol-valid (it has no tool history), so this is strictly
+request _is_ protocol-valid (it has no tool history), so this is strictly
 compatible — but a user might be surprised that history was silently
 dropped. The notice in `content` makes it visible, and
 `reasoning_diagnostics`/`recovery_steps` give full debugging trails.
@@ -410,6 +419,7 @@ dropped. The notice in `content` makes it visible, and
 The cache stores reasoning under both **scoped** keys (full conversation
 prefix) and **portable** keys (turn-context only, system-prompt-stripped).
 Portable hits worked in the trace:
+
 - Requests 6–12 used portable fallback hits after Cursor mode/model surface
   changes.
 - Request 19 switched from `deepseek-v4-pro` to `deepseek-v4-flash` and
@@ -435,7 +445,7 @@ Tracing through with the audit's Turn 1.2 input:
 
 1. **Field allowlist** — filters the client payload to
    `SUPPORTED_REQUEST_FIELDS` (`transform.py:688-690`). Drops Cursor noise
-   like `parallel_tool_calls`. *Policy choice, not pure passthrough.*
+   like `parallel_tool_calls`. _Policy choice, not pure passthrough._
 2. **Model translation** — keeps client model if it starts with `deepseek-`,
    else falls back to `config.upstream_model` (`transform.py:628-631`).
 3. **Stream usage injection** — forces
@@ -452,7 +462,7 @@ Tracing through with the audit's Turn 1.2 input:
 6. **First normalisation pass without repair** — used to compute the scope
    under which the upstream response should be recorded
    (`record_response_scope`). This lets the proxy still record reasoning
-   under the *pre-recovery* scope after recovery has truncated history, so
+   under the _pre-recovery_ scope after recovery has truncated history, so
    a follow-up that hasn't been truncated still finds it. Verified by
    `test_recovered_response_is_recorded_under_pre_recovery_scope`.
 7. **Recovery-boundary detection** — if an earlier proxy response prefixed a
@@ -469,7 +479,7 @@ Tracing through with the audit's Turn 1.2 input:
    - scoped `tool_call_signature` (function name + arguments hash, ID-stripped)
    - portable variants of the same three, gated on `turn_context_signature`.
 9. **Recovery loop** — if repair couldn't fill the gaps, a `while
-   missing_indexes and recover` loop trims further until the request is
+missing_indexes and recover` loop trims further until the request is
    valid. Each iteration is recorded in `recovery_steps`.
 10. **Final payload** — returned as `PreparedRequest` with diagnostics for
     the trace writer and structured logging.
@@ -477,6 +487,7 @@ Tracing through with the audit's Turn 1.2 input:
 ### 5.2 Response handling
 
 **Non-streaming** (`rewrite_response_body`):
+
 1. Prefixes the recovery notice to `content` if active.
 2. Records `reasoning_content` from each choice's message under every
    recording context (so both pre-recovery and active-conversation scopes
@@ -484,6 +495,7 @@ Tracing through with the audit's Turn 1.2 input:
 3. Rewrites `model` back to the original Cursor-facing name.
 
 **Streaming** (`server._proxy_streaming_response`):
+
 1. Forwards each SSE line, optionally rewriting through
    `CursorReasoningDisplayAdapter` to mirror reasoning into a
    `<details>Thinking</details>` block.
@@ -538,7 +550,7 @@ treated as a real value, not missing
 
 ### 5.5 Recovery behaviour
 
-Recovery is intentionally *not* a perfect protocol replay. If a required
+Recovery is intentionally _not_ a perfect protocol replay. If a required
 historical `reasoning_content` cannot be found, the proxy avoids sending
 invalid history by trimming to a recent user context and adding a system
 recovery message. Strict rejection mode is available for full compliance
@@ -573,7 +585,7 @@ These are not protocol violations — flagged for future contributors:
 1. **Tool-call ID collisions inside one scope** could pull the wrong
    reasoning. The `message_signature` lookup wins first (which considers
    tool-call function and arguments), so a true collision requires two
-   turns in the same scope to share the *exact* same content + tool_calls
+   turns in the same scope to share the _exact_ same content + tool_calls
    payload. Vanishingly unlikely. The portable `tool_call_id` fallback
    widens the surface slightly but only inside the
    `turn_context_signature`, which is already turn-bound.
@@ -588,7 +600,7 @@ These are not protocol violations — flagged for future contributors:
    `thinking_enabled` is False, which short-circuits both repair and
    recovery. Correct — there's nothing to repair if thinking is off — but
    subtle when a user toggles their client between thinking modes
-   mid-conversation. (Distinct from Finding 1, which is *omitted* thinking
+   mid-conversation. (Distinct from Finding 1, which is _omitted_ thinking
    in pass-through.)
 5. **`upstream_model_for(non-deepseek-model, config)`** silently rewrites
    non-DeepSeek model strings to the configured fallback. A user pointing a
@@ -614,7 +626,7 @@ In rough priority order:
    in pass-through mode unless the request explicitly disables thinking.
    Keep pass-through from injecting a field, but don't let it disable
    reasoning repair. Add a regression test for `ProxyConfig(thinking=
-   "pass-through")` with an omitted `thinking` field and missing
+"pass-through")` with an omitted `thinking` field and missing
    tool-call `reasoning_content`.
 2. **(Finding 2)** Add the older
    `"[deepseek-cursor-proxy] Recovered ..."` prefix to recovery-notice
