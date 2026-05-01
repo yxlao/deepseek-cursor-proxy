@@ -48,3 +48,6 @@ include = ["deepseek_cursor_proxy*"]
 
 [tool.black]
 target-version = ["py310"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/audit_deepseek_protocol.py" = ["E402"]
