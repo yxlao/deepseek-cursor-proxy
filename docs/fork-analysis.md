@@ -123,19 +123,38 @@ If we ever do adopt NI keys (e.g. user reports show `thinking`-mode switches eat
 
 ### What is the problem?
 
-In `server.py`, when the proxy detects assistant messages with missing reasoning, it does this:
+In `server.py:164`, when the proxy detects assistant messages with missing reasoning, it does this:
 
 ```python
 if prepared.missing_reasoning_messages:
+    LOG.warning("strict missing-reasoning mode rejected request ...")
     self._send_json(409, {"error": {...}})
     return
 ```
 
-The intent of this 409 is to back off only when the user has explicitly opted into the strict mode — i.e. when the config says `missing_reasoning_strategy == "reject"`. In any other mode (including the default `"recover"`), the proxy should soldier on, not 409.
+Three things to notice:
 
-But the `if` above does not actually check the strategy. It fires the 409 whenever there are missing reasoning messages, period.
+1. The `if` gate has no strategy check.
+2. The `LOG.warning` claims strict mode is the reason regardless of actual mode.
+3. The 409 error body recommends switching to `--missing-reasoning-strategy recover` — i.e. the message itself assumes this should only fire in `reject` mode.
 
-So why does this not blow up in practice today? Because in `"recover"` mode, the recovery loop in `transform.py` runs first and (almost always) drives `missing_indexes` to empty before the server even sees it. The 409 path is reachable, but only in edge cases where recovery exits with `not dropped_messages` — i.e. the latest_user fallback couldn't drop anything more, but missing indexes remain. Rare, but possible, and when it happens the user gets a 409 on a request they explicitly asked the proxy to recover from.
+The *intent* is clearly "only fire when the user has opted into `reject`". But the gate fires whenever `missing_reasoning_messages > 0`, regardless of strategy.
+
+### Is the bug actually reachable?
+
+I traced through the recovery loop (`transform.py:817-839`) and `recover_messages_from_missing_reasoning()` (`transform.py:554-641`). The loop only runs when strategy is `"recover"`. It calls the recovery function, then breaks early if `not dropped_messages`. The recovery function has three return paths and **two of them can return `dropped_messages = 0`**:
+
+- **No user message in the conversation:** `last_user_index = -1` (line 612) → returns `(messages, 0, None, ...)`. The loop hits `if not dropped_messages: break` and exits with `missing_indexes` still populated.
+- **Recovery boundary at index 0** (a recovery notice was at the very start, with no real content before it): `omitted_messages = recovery_boundary_index - len(leading_messages) - kept_context_messages = 0` → same break.
+
+When either fires, `missing_reasoning_messages` stays non-zero, the recovery-loop exits without calling `normalize_messages` again, and the unconditional 409 in `server.py:164` triggers — even though the user is in `recover` mode.
+
+Concrete cases that can hit this:
+
+- Cursor sends `[system, assistant_with_tool_calls, tool]` with no user message — possible for `/summarize` or auto-generated traffic.
+- A continuation where the only user-visible content above is a recovery notice the proxy itself emitted earlier, with no preceding user turn before that notice.
+
+Neither is common in ordinary chat flow, but both *can* occur — especially around Cursor's auto-summary endpoints.
 
 ### The fork's fix
 
@@ -150,9 +169,22 @@ if (
     return
 ```
 
+### What changes after the fix?
+
+In `recover` mode with leftover `missing_indexes`:
+
+- The proxy stops 409ing.
+- It forwards the request to DeepSeek as-is.
+- DeepSeek will probably 400 with "the reasoning_content in the thinking mode must be passed back".
+- The proxy relays that 400 to Cursor.
+
+That is consistent with the contract we offer in `recover` mode: we try, and if DeepSeek refuses, we relay the refusal. We do not pre-empt with a synthetic 409.
+
 ### Recommendation
 
-**Take it as-is.** It is a one-line correctness fix. The current code is plainly inconsistent with the user's stated intent in `recover` mode, and the fix makes the gate match the documented contract. No downside.
+**Take it as-is.** One-line correctness fix. The current code is inconsistent with the documented `recover` contract, the bug is reachable in edge-case Cursor traffic (verified by tracing the recovery loop), and the fix has no downside.
+
+We should also add a `test_protocol.py` test that constructs one of the no-user-message cases above in `recover` mode and asserts the proxy *does not* 409 (it should forward to upstream and propagate whatever DeepSeek returns). This locks the contract in.
 
 ---
 

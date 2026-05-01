@@ -161,7 +161,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         if trace is not None:
             trace.record_transform(prepared)
         log_context_summary(prepared)
-        if prepared.missing_reasoning_messages:
+        if (
+            prepared.missing_reasoning_messages
+            and self.config.missing_reasoning_strategy == "reject"
+        ):
             LOG.warning(
                 (
                     "strict missing-reasoning mode rejected request path=%s "
