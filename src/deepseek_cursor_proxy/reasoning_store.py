@@ -141,8 +141,7 @@ def scoped_reasoning_keys(message: dict[str, Any], scope: str) -> list[str]:
     # so neither tool_call_id nor tool_call_signature (which canonicalizes
     # arguments) survives the round-trip through Cursor's transcript.
     keys.extend(
-        f"scope:{scope}:tool_name:{tool_name}"
-        for tool_name in tool_call_names(message)
+        f"scope:{scope}:tool_name:{tool_name}" for tool_name in tool_call_names(message)
     )
     return keys
 
@@ -172,8 +171,7 @@ def portable_reasoning_keys(
         if isinstance(tool_call, dict)
     )
     keys.extend(
-        f"namespace:{cache_namespace}:turn:{turn_signature}:"
-        f"tool_name:{tool_name}"
+        f"namespace:{cache_namespace}:turn:{turn_signature}:" f"tool_name:{tool_name}"
         for tool_name in tool_call_names(message)
     )
     return keys
