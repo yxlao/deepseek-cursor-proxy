@@ -540,6 +540,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 scope=record_response_scope,
                 prior_messages=record_response_messages,
                 recording_contexts=record_response_contexts,
+                display_reasoning=self.config.display_reasoning,
+                collapsible_reasoning=self.config.collapsible_reasoning,
             )
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             LOG.warning("failed to rewrite upstream JSON response: %s", exc)
@@ -812,7 +814,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--thinking",
-        choices=["enabled", "disabled", "pass-through"],
+        choices=["enabled", "disabled"],
         help="DeepSeek thinking mode, default from config or enabled",
     )
     parser.add_argument(

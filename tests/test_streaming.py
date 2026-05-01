@@ -6,6 +6,7 @@ from deepseek_cursor_proxy.reasoning_store import ReasoningStore, conversation_s
 from deepseek_cursor_proxy.streaming import (
     CursorReasoningDisplayAdapter,
     StreamAccumulator,
+    fold_reasoning_into_content,
 )
 
 
@@ -428,6 +429,45 @@ class CursorReasoningDisplayAdapterTests(unittest.TestCase):
             closing_chunk["choices"][0]["delta"]["content"], "\n</details>\n\n"
         )
         self.assertIsNone(adapter.flush_chunk("deepseek-v4-pro"))
+
+
+class FoldReasoningTests(unittest.TestCase):
+    def test_fold_reasoning_into_non_streaming_content(self) -> None:
+        """Non-streaming responses mirror reasoning_content into a visible
+        <details> block, matching the streaming layout."""
+        payload = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "answer",
+                        "reasoning_content": "thinking",
+                    },
+                }
+            ]
+        }
+        fold_reasoning_into_content(payload, collapsible=True)
+        self.assertEqual(
+            payload["choices"][0]["message"]["content"],
+            "<details>\n<summary>Thinking</summary>\n\nthinking\n</details>\n\nanswer",
+        )
+
+    def test_fold_reasoning_skips_empty_reasoning(self) -> None:
+        payload = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "answer",
+                        "reasoning_content": "",
+                    },
+                }
+            ]
+        }
+        fold_reasoning_into_content(payload, collapsible=True)
+        self.assertEqual(payload["choices"][0]["message"]["content"], "answer")
 
 
 if __name__ == "__main__":

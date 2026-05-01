@@ -172,8 +172,6 @@ def settings_from_config(
 
 def normalize_thinking(value: Any) -> str:
     thinking = as_str(value, DEFAULT_THINKING).strip().lower()
-    if thinking in {"passthrough", "pass-through", "pass_through"}:
-        return "pass-through"
     if thinking in {"enabled", "disabled"}:
         return thinking
     return DEFAULT_THINKING
