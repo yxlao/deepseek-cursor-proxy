@@ -206,7 +206,7 @@ class TraceWriter:
                 "pid": os.getpid(),
                 "base_dir": str(self.base_dir),
                 "session_dir": str(self.session_dir),
-                "format": "one JSON file per proxied POST request",
+                "format": "one JSON file per traced POST request",
             },
         )
 
@@ -223,6 +223,26 @@ class TraceRequest:
     def record_cursor_body(self, payload: dict[str, Any]) -> None:
         self.data["request"]["body"] = payload
         self.data["request"]["summary"] = payload_summary(payload)
+
+    def record_cursor_body_bytes(self, body: bytes) -> None:
+        self.data["request"]["body_bytes"] = len(body)
+        text = body.decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            self.data["request"]["body"] = {"text": text}
+            return
+        self.data["request"]["body"] = payload
+        if isinstance(payload, dict):
+            self.data["request"]["summary"] = payload_summary(payload)
+
+    def record_cursor_body_omitted(
+        self, *, reason: str, body_bytes: int | None = None
+    ) -> None:
+        omitted: dict[str, Any] = {"reason": reason}
+        if body_bytes is not None:
+            omitted["body_bytes"] = body_bytes
+        self.data["request"]["body_omitted"] = omitted
 
     def record_transform(self, prepared: Any) -> None:
         self.data["transform"] = {

@@ -658,6 +658,43 @@ class RecoveryTests(_StrictUpstreamCase):
                 continue
             self.assertNotIn("deepseek-cursor-proxy", message.get("content", ""))
 
+    def test_recover_mode_does_not_short_circuit_with_409(self) -> None:
+        """In `recover` mode, a payload with no user message leaves the
+        recovery loop unable to drop anything (`dropped_messages == 0`),
+        so `missing_indexes` stays populated. The proxy must NOT 409 in
+        that case — it must forward to upstream and relay whatever
+        DeepSeek decides. 409 is reserved for `reject` mode."""
+        status, _ = _post(
+            f"{self.proxy.url}/v1/chat/completions",
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    {"role": "system", "content": "Be brief."},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": CALL_ID_1,
+                                "type": "function",
+                                "function": {"name": "get_date", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": CALL_ID_1,
+                        "content": "2026-04-24",
+                    },
+                ],
+            },
+        )
+        # Strict upstream rejects the missing-reasoning history with 400.
+        # The point of this test is the proxy did NOT pre-empt with 409.
+        self.assertNotEqual(status, 409)
+        self.assertEqual(status, 400)
+        self.assertEqual(len(StrictFakeDeepSeek.requests), 1)
+
 
 # ---------------------------------------------------------------------------
 # Streaming behaviour

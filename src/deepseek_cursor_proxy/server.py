@@ -106,6 +106,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             )
         if request_path not in {"/chat/completions", "/v1/chat/completions"}:
             LOG.warning("rejected unsupported POST path=%s status=404", request_path)
+            self._record_request_body_for_trace(trace)
             self._send_json(
                 404,
                 {"error": {"message": "Only /v1/chat/completions is supported"}},
@@ -119,6 +120,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 "rejected request path=%s status=401 reason=missing_bearer_token",
                 request_path,
             )
+            self._record_request_body_for_trace(trace)
             self._send_json(
                 401,
                 {"error": {"message": "Missing Authorization bearer token"}},
@@ -161,7 +163,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         if trace is not None:
             trace.record_transform(prepared)
         log_context_summary(prepared)
-        if prepared.missing_reasoning_messages:
+        if (
+            prepared.missing_reasoning_messages
+            and self.config.missing_reasoning_strategy == "reject"
+        ):
             LOG.warning(
                 (
                     "strict missing-reasoning mode rejected request path=%s "
@@ -469,6 +474,32 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("Request body must be a JSON object")
         return payload
+
+    def _record_request_body_for_trace(self, trace: TraceRequest | None) -> None:
+        if trace is None:
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            trace.record_cursor_body_omitted(reason="invalid_content_length")
+            return
+        if length < 0:
+            trace.record_cursor_body_omitted(
+                reason="invalid_content_length", body_bytes=length
+            )
+            return
+        if length > self.config.max_request_body_bytes:
+            trace.record_cursor_body_omitted(reason="body_too_large", body_bytes=length)
+            self.close_connection = True
+            return
+        try:
+            raw_body = self.rfile.read(length)
+        except OSError as exc:
+            trace.record_cursor_body_omitted(
+                reason=f"read_failed:{exc}", body_bytes=length
+            )
+            return
+        trace.record_cursor_body_bytes(raw_body)
 
     def _upstream_headers(self, stream: bool, authorization: str) -> dict[str, str]:
         headers = {
