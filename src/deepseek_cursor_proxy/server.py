@@ -72,52 +72,25 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:
         request_path = urlparse(self.path).path
-        trace = self._start_trace(request_path)
-        if self.config.verbose or trace is not None:
+        if self.config.verbose:
             LOG.info(
                 "incoming OPTIONS %s from %s",
                 request_path,
                 self.client_address[0],
             )
-        if trace is not None:
-            trace.record_cursor_response(status=204, headers={})
-        sent_headers = self._send_response_headers(
-            204, [], "sending CORS preflight response"
-        )
-        self._finish_trace(
-            trace,
-            "completed" if sent_headers else "client_disconnected",
-            http_status=204,
-        )
+        self._send_response_headers(204, [], "sending CORS preflight response")
 
     def do_GET(self) -> None:
         request_path = urlparse(self.path).path
-        trace = self._start_trace(request_path)
-        if self.config.verbose or trace is not None:
+        if self.config.verbose:
             LOG.info("incoming GET %s from %s", request_path, self.client_address[0])
         if request_path in {"/healthz", "/v1/healthz"}:
-            self._send_json(200, {"ok": True}, trace=trace)
-            self._finish_trace(trace, "completed", http_status=200)
+            self._send_json(200, {"ok": True})
             return
         if request_path in {"/models", "/v1/models"}:
-            self._send_models(trace=trace)
-            self._finish_trace(trace, "completed", http_status=200)
+            self._send_models()
             return
-        LOG.warning("rejected unsupported GET path=%s status=404", request_path)
-        self._send_json(404, {"error": {"message": "Not found"}}, trace=trace)
-        self._finish_trace(trace, "rejected", http_status=404)
-
-    def do_HEAD(self) -> None:
-        self._reject_unsupported_method(read_body=False)
-
-    def do_PUT(self) -> None:
-        self._reject_unsupported_method(read_body=True)
-
-    def do_PATCH(self) -> None:
-        self._reject_unsupported_method(read_body=True)
-
-    def do_DELETE(self) -> None:
-        self._reject_unsupported_method(read_body=True)
+        self._send_json(404, {"error": {"message": "Not found"}})
 
     def do_POST(self) -> None:
         started = time.monotonic()
@@ -157,7 +130,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            payload = self._read_json_body(trace=trace)
+            payload = self._read_json_body()
         except RequestBodyTooLarge as exc:
             LOG.warning(
                 "rejected request path=%s status=413 reason=%s", request_path, exc
@@ -172,6 +145,9 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": {"message": str(exc)}}, trace=trace)
             self._finish_trace(trace, "rejected", http_status=400, reason=str(exc))
             return
+
+        if trace is not None:
+            trace.record_cursor_body(payload)
 
         if self.config.verbose:
             log_json("cursor request body", payload)
@@ -422,48 +398,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         if sent_headers:
             self._write_to_client(body, "sending JSON response body")
 
-    def _send_empty(
-        self,
-        status: int,
-        headers: list[tuple[str, str]] | None = None,
-        *,
-        trace: TraceRequest | None = None,
-    ) -> bool:
-        response_headers = [("Content-Length", "0")]
-        if headers:
-            response_headers.extend(headers)
-        if trace is not None:
-            trace.record_cursor_response(
-                status=status,
-                headers={name: value for name, value in response_headers},
-            )
-        return self._send_response_headers(
-            status,
-            response_headers,
-            "sending empty response headers",
-        )
-
-    def _reject_unsupported_method(self, *, read_body: bool) -> None:
-        request_path = urlparse(self.path).path
-        trace = self._start_trace(request_path)
-        LOG.warning(
-            "rejected unsupported %s path=%s status=404",
-            self.command,
-            request_path,
-        )
-        if read_body:
-            self._record_request_body_for_trace(trace)
-        if self.command == "HEAD":
-            sent_headers = self._send_empty(404, trace=trace)
-            self._finish_trace(
-                trace,
-                "rejected" if sent_headers else "client_disconnected",
-                http_status=404,
-            )
-            return
-        self._send_json(404, {"error": {"message": "Not found"}}, trace=trace)
-        self._finish_trace(trace, "rejected", http_status=404)
-
     def _send_response_headers(
         self,
         status: int,
@@ -497,7 +431,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _send_models(self, *, trace: TraceRequest | None = None) -> None:
+    def _send_models(self) -> None:
         created = int(time.time())
         model_ids = list(
             dict.fromkeys(
@@ -517,32 +451,20 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             }
             for model_id in model_ids
         ]
-        self._send_json(200, {"object": "list", "data": models}, trace=trace)
+        self._send_json(200, {"object": "list", "data": models})
 
-    def _read_json_body(self, *, trace: TraceRequest | None = None) -> dict[str, Any]:
+    def _read_json_body(self) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError as exc:
-            if trace is not None:
-                trace.record_cursor_body_omitted(reason="invalid_content_length")
             raise ValueError("Invalid Content-Length") from exc
         if length < 0:
-            if trace is not None:
-                trace.record_cursor_body_omitted(
-                    reason="invalid_content_length", body_bytes=length
-                )
             raise ValueError("Invalid Content-Length")
         if length > self.config.max_request_body_bytes:
-            if trace is not None:
-                trace.record_cursor_body_omitted(
-                    reason="body_too_large", body_bytes=length
-                )
             raise RequestBodyTooLarge(
                 f"Request body is too large; limit is {self.config.max_request_body_bytes} bytes"
             )
         raw_body = self.rfile.read(length)
-        if trace is not None:
-            trace.record_cursor_body_bytes(raw_body)
         if not raw_body:
             raise ValueError("Request body is empty")
         try:

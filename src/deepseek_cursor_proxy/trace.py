@@ -206,7 +206,7 @@ class TraceWriter:
                 "pid": os.getpid(),
                 "base_dir": str(self.base_dir),
                 "session_dir": str(self.session_dir),
-                "format": "one JSON file per traced HTTP request",
+                "format": "one JSON file per traced POST request",
             },
         )
 
