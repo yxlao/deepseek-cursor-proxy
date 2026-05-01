@@ -80,6 +80,7 @@ class ServerTests(unittest.TestCase):
                 "--no-ngrok",
                 "--no-verbose",
                 "--no-display-reasoning",
+                "--no-collasible-resoning",
                 "--cors",
                 "--trace-dir",
                 "/tmp/dcp-traces",
@@ -89,6 +90,7 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(args.ngrok)
         self.assertFalse(args.verbose)
         self.assertFalse(args.display_reasoning)
+        self.assertFalse(args.collapsible_reasoning)
         self.assertTrue(args.cors)
         self.assertEqual(args.trace_dir, Path("/tmp/dcp-traces"))
 
@@ -205,6 +207,48 @@ class ServerTests(unittest.TestCase):
             "upstream streaming response read failed",
             "\n".join(captured.output),
         )
+
+    def test_collapsible_reasoning_has_no_effect_when_display_is_disabled(
+        self,
+    ) -> None:
+        wfile = BytesIO()
+        handler = make_proxy_handler(wfile)
+        handler.server.config = ProxyConfig(
+            cursor_display_reasoning=False,
+            cursor_collapsible_reasoning=True,
+        )
+        chunk = {
+            "id": "chatcmpl-stream",
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "Need context."},
+                }
+            ],
+        }
+        response = FakeStreamingResponse(
+            [
+                f"data: {json.dumps(chunk)}\n\n".encode("utf-8"),
+                b"data: [DONE]\n\n",
+            ]
+        )
+
+        try:
+            sent = handler._proxy_streaming_response(
+                response,
+                "deepseek-v4-pro",
+                [{"role": "user", "content": "hi"}],
+                "cache-namespace",
+            )
+        finally:
+            handler.server.reasoning_store.close()
+
+        body = wfile.getvalue().decode("utf-8")
+        self.assertTrue(sent.sent)
+        self.assertIn("reasoning_content", body)
+        self.assertNotIn("<details>", body)
+        self.assertNotIn("<think>", body)
 
 
 if __name__ == "__main__":

@@ -335,6 +335,38 @@ class CursorReasoningDisplayAdapterTests(unittest.TestCase):
         )
         self.assertEqual(answer_delta["content"], "\n</details>\n\nFinal answer.")
 
+    def test_can_mirror_reasoning_content_into_legacy_think_content(self) -> None:
+        adapter = CursorReasoningDisplayAdapter(collapsible=False)
+        reasoning_chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "Need context."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        answer_chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "Final answer."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+
+        adapter.rewrite_chunk(reasoning_chunk)
+        adapter.rewrite_chunk(answer_chunk)
+
+        self.assertEqual(
+            reasoning_chunk["choices"][0]["delta"]["content"], "<think>\nNeed context."
+        )
+        self.assertEqual(
+            answer_chunk["choices"][0]["delta"]["content"],
+            "\n</think>\n\nFinal answer.",
+        )
+
     def test_closes_thinking_block_before_tool_calls(self) -> None:
         adapter = CursorReasoningDisplayAdapter()
         adapter.rewrite_chunk(

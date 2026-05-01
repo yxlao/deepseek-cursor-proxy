@@ -7,8 +7,10 @@ from typing import Any
 from .reasoning_store import ReasoningStore
 
 
-THINKING_BLOCK_START = "<details>\n<summary>Thinking</summary>\n\n"
-THINKING_BLOCK_END = "\n</details>\n\n"
+THINKING_BLOCK_START = "<think>\n"
+THINKING_BLOCK_END = "\n</think>\n\n"
+COLLAPSIBLE_THINKING_BLOCK_START = "<details>\n<summary>Thinking</summary>\n\n"
+COLLAPSIBLE_THINKING_BLOCK_END = "\n</details>\n\n"
 
 
 @dataclass
@@ -212,9 +214,15 @@ class StreamAccumulator:
 class CursorReasoningDisplayAdapter:
     """Mirror reasoning_content into content for Cursor's visible thinking UI path."""
 
-    def __init__(self) -> None:
+    def __init__(self, collapsible: bool = True) -> None:
         self._open_choices: set[int] = set()
         self._last_chunk_metadata: dict[str, Any] = {}
+        self._block_start = (
+            COLLAPSIBLE_THINKING_BLOCK_START if collapsible else THINKING_BLOCK_START
+        )
+        self._block_end = (
+            COLLAPSIBLE_THINKING_BLOCK_END if collapsible else THINKING_BLOCK_END
+        )
 
     def rewrite_chunk(self, chunk: dict[str, Any]) -> None:
         self._remember_chunk_metadata(chunk)
@@ -235,7 +243,7 @@ class CursorReasoningDisplayAdapter:
             reasoning_content = delta.get("reasoning_content")
             if isinstance(reasoning_content, str) and reasoning_content:
                 if index not in self._open_choices:
-                    mirrored_parts.append(THINKING_BLOCK_START)
+                    mirrored_parts.append(self._block_start)
                     self._open_choices.add(index)
                 mirrored_parts.append(reasoning_content)
 
@@ -246,7 +254,7 @@ class CursorReasoningDisplayAdapter:
                 or raw_choice.get("finish_reason") is not None
             )
             if should_close:
-                mirrored_parts.append(THINKING_BLOCK_END)
+                mirrored_parts.append(self._block_end)
                 self._open_choices.discard(index)
 
             if not mirrored_parts:
@@ -262,7 +270,7 @@ class CursorReasoningDisplayAdapter:
         choices = [
             {
                 "index": index,
-                "delta": {"content": THINKING_BLOCK_END},
+                "delta": {"content": self._block_end},
                 "finish_reason": None,
             }
             for index in sorted(self._open_choices)
