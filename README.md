@@ -135,9 +135,9 @@ Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.
 ## How It Works
 
 - **Core fix:** DeepSeek [thinking-mode tool calls](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) require the complete **multi-round** `reasoning_content` chain to be sent back in later requests. Cursor omits that field, causing a 400 error. The proxy (`Cursor -> ngrok -> proxy -> DeepSeek API`) stores DeepSeek's original `reasoning_content` and patches missing blocks back into outgoing tool-call history.
-- **Conversation-safe cache:** Cache keys are scoped by conversation prefix, upstream model family, config, and API-key hash, so reused tool-call IDs in different chats do not collide.
-- **Context-cache friendly:** The proxy restores the original `reasoning_content` string and avoids synthetic thread IDs or timestamps, keeping repeated prefixes compatible with [DeepSeek context cache](https://api-docs.deepseek.com/guides/kv_cache).
-- **Compatibility extras:** It also converts legacy `functions`/`function_call` to `tools`/`tool_choice`, preserves named and required tool choice, normalizes `reasoning_effort` aliases, strips mirrored thinking display blocks from assistant history, flattens text content arrays, and can mirror thinking into Cursor-visible Markdown.
+- **Multi-conversation isolation:** To avoid collisions across concurrent conversations, the proxy scopes cache keys by a SHA-256 hash of the canonical conversation prefix (roles, content, and tool calls, excluding `reasoning_content`) plus the upstream model, configuration, and an API-key hash. Different threads get different scopes, so reused tool-call IDs do not collide. Byte-identical cloned histories produce identical scopes.
+- **Context caching compatibility:** The proxy preserves compatibility by never injecting synthetic thread IDs, timestamps, or cache-control messages. It restores `reasoning_content` as the exact original string, so repeated prefixes remain intact for [DeepSeek context cache](https://api-docs.deepseek.com/guides/kv_cache). Cache hit rates are logged in the terminal output.
+- **Additional compatibility fixes:** Beyond reasoning repair, the proxy converts legacy `functions`/`function_call` fields to `tools`/`tool_choice`, preserves required and named tool-choice semantics, normalizes `reasoning_effort` aliases, strips mirrored thinking display blocks from assistant content, flattens multi-part content arrays to plain text, and mirrors `reasoning_content` into Cursor-visible Markdown details blocks.
 
 ## Development
 
