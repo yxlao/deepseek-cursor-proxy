@@ -1,0 +1,29 @@
+# Конфиг для запуска в Docker (см. Dockerfile / docker-compose.yml).
+# Ключ API DeepSeek задаётся в Cursor (Custom model → API Key); прокси пробрасывает Authorization на upstream.
+
+base_url: https://api.deepseek.com
+model: deepseek-v4-pro
+thinking: enabled
+reasoning_effort: high
+
+# Слушаем все интерфейсы внутри контейнера; с хоста: http://127.0.0.1:4012/v1
+host: 0.0.0.0
+port: 8000
+request_timeout: 600
+max_request_body_bytes: 41943040
+ngrok: false
+
+display_reasoning: true
+collapsible_reasoning: true
+
+missing_reasoning_strategy: recover
+reasoning_content_path: /app/data/reasoning_content.sqlite3
+
+# Часто советуют в гайдах для обхода 400 при thinking + tools; в текущей версии прокси
+# ремонт истории и стриминг встроены — эти поля оставлены для совместимости с инструкциями.
+cache_reasoning: true
+stream: true
+enable_prompt_caching: true
+
+verbose: false
+cors: false

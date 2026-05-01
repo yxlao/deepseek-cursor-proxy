@@ -1,0 +1,15 @@
+services:
+  reasoner-proxy:
+    build: .
+    container_name: deepseek_reasoner_proxy
+    ports:
+      - "4012:8000"
+    environment:
+      # Не используется самим прокси: ключ задаётся в Cursor. Удобно для .env / документации.
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+    volumes:
+      - deepseek_proxy_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  deepseek_proxy_data:

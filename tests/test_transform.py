@@ -70,6 +70,10 @@ class ContentHelpersTests(unittest.TestCase):
             strip_cursor_thinking_blocks("<think>\nplan\n</think>\n\nanswer"),
             "answer",
         )
+        self.assertEqual(
+            strip_cursor_thinking_blocks("> 💭 plan\n> more\n\nanswer"),
+            "answer",
+        )
 
     def test_strip_cursor_thinking_blocks_preserves_unrelated_details(self) -> None:
         kept = "<details><summary>Diff</summary>\nrelevant\n</details>"

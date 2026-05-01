@@ -977,13 +977,11 @@ class StreamingDisplayTests(unittest.TestCase):
             if line.startswith("data: {")
         ]
         self.assertEqual(
-            chunks[0]["choices"][0]["delta"]["content"],
-            "<details>\n<summary>Thinking</summary>\n\nNeed ",
+            chunks[0]["choices"][0]["delta"],
+            {"role": "assistant", "content": "> 💭 Need "},
         )
-        self.assertEqual(
-            chunks[2]["choices"][0]["delta"]["content"],
-            "\n</details>\n\nFinal.",
-        )
+        self.assertEqual(chunks[1]["choices"][0]["delta"], {"content": "> context."})
+        self.assertEqual(chunks[2]["choices"][0]["delta"]["content"], "\n\nFinal.")
 
 
 class NonStreamingDisplayTests(_StrictUpstreamCase):
@@ -1007,7 +1005,7 @@ class NonStreamingDisplayTests(_StrictUpstreamCase):
         content = response["choices"][0]["message"]["content"]
         self.assertEqual(
             content,
-            f"<details>\n<summary>Thinking</summary>\n\n{THINKING_1_1}\n</details>\n\n",
+            f"> 💭 {THINKING_1_1}\n\n",
         )
 
 
@@ -1354,9 +1352,8 @@ class StreamingCacheTimingTests(unittest.TestCase):
             )
             response.read()
         self.assertEqual(status, 200, payload)
-        self.assertEqual(
-            payload["choices"][0]["message"]["content"].split("</details>")[-1],
-            "\n\nfollow-up accepted",
+        self.assertTrue(
+            payload["choices"][0]["message"]["content"].endswith("follow-up accepted")
         )
 
 

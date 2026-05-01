@@ -1,0 +1,10 @@
+.git
+.github
+tests
+.venv
+**/__pycache__
+*.pyc
+.pytest_cache
+*.md
+!README.md
+agent-transcripts
