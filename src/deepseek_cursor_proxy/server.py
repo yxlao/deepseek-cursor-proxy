@@ -230,46 +230,99 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 headers=upstream_headers,
                 body_bytes=upstream_body,
             )
-        request = Request(
-            upstream_url,
-            data=upstream_body,
-            method="POST",
-            headers=upstream_headers,
-        )
 
         log_send_summary(prepared)
 
-        try:
-            if self.config.verbose:
-                LOG.info("forwarding to %s", upstream_url)
-            response = urlopen(request, timeout=self.config.request_timeout)
-        except HTTPError as exc:
-            LOG.warning(
-                "request failed upstream_status=%s stream=%s elapsed_ms=%s",
-                exc.code,
-                bool(prepared.payload.get("stream")),
-                elapsed_ms(started),
-            )
-            self._send_upstream_error(exc, trace=trace)
-            self._finish_trace(
-                trace,
-                "upstream_error",
-                http_status=exc.code,
-                stream=bool(prepared.payload.get("stream")),
-            )
-            return
-        except URLError as exc:
-            LOG.warning(
-                "upstream request failed elapsed_ms=%s reason=%s",
-                elapsed_ms(started),
-                exc.reason,
-            )
-            self._send_json(
-                502,
-                {"error": {"message": f"Upstream request failed: {exc.reason}"}},
-                trace=trace,
-            )
-            self._finish_trace(trace, "upstream_error", http_status=502)
+        MAX_RETRIES = 2  # 1 initial + 2 retries = 3 total attempts
+        RETRY_BACKOFF_SECONDS = [2.0, 4.0]  # backoff between attempts
+
+        response = None
+        last_error: HTTPError | URLError | None = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                if self.config.verbose:
+                    LOG.info(
+                        "forwarding to %s (attempt %s/%s)",
+                        upstream_url,
+                        attempt + 1,
+                        MAX_RETRIES + 1,
+                    )
+                request = Request(
+                    upstream_url,
+                    data=upstream_body,
+                    method="POST",
+                    headers=upstream_headers,
+                )
+                response = urlopen(request, timeout=self.config.request_timeout)
+                break
+            except HTTPError as exc:
+                last_error = exc
+                if exc.code is not None and 500 <= exc.code < 600:
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_BACKOFF_SECONDS[attempt]
+                        LOG.warning(
+                            (
+                                "upstream returned %s, retrying in %.1fs "
+                                "(attempt %s/%s) elapsed_ms=%s"
+                            ),
+                            exc.code,
+                            delay,
+                            attempt + 1,
+                            MAX_RETRIES + 1,
+                            elapsed_ms(started),
+                        )
+                        time.sleep(delay)
+                        continue
+                break
+            except URLError as exc:
+                last_error = exc
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BACKOFF_SECONDS[attempt]
+                    LOG.warning(
+                        (
+                            "upstream request failed, retrying in %.1fs "
+                            "(attempt %s/%s) reason=%s elapsed_ms=%s"
+                        ),
+                        delay,
+                        attempt + 1,
+                        MAX_RETRIES + 1,
+                        exc.reason,
+                        elapsed_ms(started),
+                    )
+                    time.sleep(delay)
+                    continue
+                break
+
+        if response is None:
+            if isinstance(last_error, HTTPError):
+                exc = last_error
+                LOG.warning(
+                    "request failed upstream_status=%s stream=%s elapsed_ms=%s",
+                    exc.code,
+                    bool(prepared.payload.get("stream")),
+                    elapsed_ms(started),
+                )
+                self._send_upstream_error(exc, trace=trace)
+                self._finish_trace(
+                    trace,
+                    "upstream_error",
+                    http_status=exc.code,
+                    stream=bool(prepared.payload.get("stream")),
+                )
+            else:
+                exc = last_error or URLError("unknown upstream error")
+                reason_str = getattr(exc, "reason", str(exc)) if exc else "unknown"
+                LOG.warning(
+                    "upstream request failed elapsed_ms=%s reason=%s",
+                    elapsed_ms(started),
+                    reason_str,
+                )
+                self._send_json(
+                    502,
+                    {"error": {"message": f"Upstream request failed: {reason_str}"}},
+                    trace=trace,
+                )
+                self._finish_trace(trace, "upstream_error", http_status=502)
             return
 
         with response:
