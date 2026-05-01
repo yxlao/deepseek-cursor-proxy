@@ -11,6 +11,7 @@ import threading
 from tempfile import TemporaryDirectory
 import time
 import unittest
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from deepseek_cursor_proxy.config import ProxyConfig
@@ -206,6 +207,84 @@ class TraceIntegrationTests(unittest.TestCase):
         )
         with urlopen(request, timeout=5) as response:
             return json.loads(response.read())
+
+    def test_traces_unsupported_post_path_with_body(self) -> None:
+        request = Request(
+            f"{self.proxy.url}/v1/summarize",
+            data=json.dumps(
+                {
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "summarize"}],
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": "Bearer sk-from-cursor",
+                "Content-Type": "application/json",
+            },
+        )
+        with self.assertRaises(HTTPError) as captured:
+            urlopen(request, timeout=5)
+        self.assertEqual(captured.exception.code, 404)
+        captured.exception.read()
+
+        trace = _read_single_trace(self.writer.session_dir)
+        self.assertEqual(trace["request"]["method"], "POST")
+        self.assertEqual(trace["request"]["path"], "/v1/summarize")
+        self.assertEqual(trace["request"]["body"]["model"], "gpt-4o-mini")
+        self.assertEqual(trace["request"]["summary"]["model"], "gpt-4o-mini")
+        self.assertEqual(trace["completion"]["status"], "rejected")
+        self.assertEqual(trace["completion"]["http_status"], 404)
+        self.assertEqual(trace["transform"], {})
+        self.assertEqual(_CannedUpstream.requests, [])
+
+    def test_traces_unsupported_get_path(self) -> None:
+        request = Request(f"{self.proxy.url}/v1/summarize", method="GET")
+        with self.assertRaises(HTTPError) as captured:
+            urlopen(request, timeout=5)
+        self.assertEqual(captured.exception.code, 404)
+        captured.exception.read()
+
+        trace = _read_single_trace(self.writer.session_dir)
+        self.assertEqual(trace["request"]["method"], "GET")
+        self.assertEqual(trace["request"]["path"], "/v1/summarize")
+        self.assertEqual(trace["completion"]["status"], "rejected")
+        self.assertEqual(trace["completion"]["http_status"], 404)
+        self.assertEqual(trace["cursor_response"]["status"], 404)
+        self.assertEqual(trace["transform"], {})
+
+    def test_traces_unsupported_put_path_with_body(self) -> None:
+        request = Request(
+            f"{self.proxy.url}/v1/summarize",
+            data=json.dumps({"model": "gpt-4o-mini"}).encode("utf-8"),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(HTTPError) as captured:
+            urlopen(request, timeout=5)
+        self.assertEqual(captured.exception.code, 404)
+        captured.exception.read()
+
+        trace = _read_single_trace(self.writer.session_dir)
+        self.assertEqual(trace["request"]["method"], "PUT")
+        self.assertEqual(trace["request"]["path"], "/v1/summarize")
+        self.assertEqual(trace["request"]["body"]["model"], "gpt-4o-mini")
+        self.assertEqual(trace["completion"]["status"], "rejected")
+        self.assertEqual(trace["completion"]["http_status"], 404)
+        self.assertEqual(trace["transform"], {})
+
+    def test_traces_options_request(self) -> None:
+        request = Request(f"{self.proxy.url}/v1/chat/completions", method="OPTIONS")
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 204)
+            response.read()
+
+        trace = _read_single_trace(self.writer.session_dir)
+        self.assertEqual(trace["request"]["method"], "OPTIONS")
+        self.assertEqual(trace["request"]["path"], "/v1/chat/completions")
+        self.assertEqual(trace["completion"]["status"], "completed")
+        self.assertEqual(trace["completion"]["http_status"], 204)
+        self.assertEqual(trace["cursor_response"]["status"], 204)
 
     def test_captures_non_streaming_replay_without_api_key(self) -> None:
         self._post(
