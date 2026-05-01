@@ -62,7 +62,7 @@ So in practice, on our current `main`:
 - Agent↔Plan switching (within same model/mode): portable keys catch it. No NI keys needed.
 - Going through a non-DeepSeek model and back: triggers one recovery, then continues cleanly. PR #28 documents this as "expected".
 
-**Action item — restore PR #28's regression tests.** PR #28 originally shipped five regression tests in `tests/test_transform.py`:
+**Done — PR #28's regression tests have been restored.** They were originally shipped in `tests/test_transform.py`:
 
 - `test_deepseek_pro_and_flash_share_reasoning_namespace`
 - `test_strict_hit_backfills_portable_cache_for_mode_switch`
@@ -70,18 +70,7 @@ So in practice, on our current `main`:
 - `test_portable_turn_cache_isolated_for_reused_tool_call_id`
 - `test_recovered_response_is_recorded_under_pre_recovery_scope`
 
-All five were dropped by PR #33's test refactor (they were in `test_transform.py`, which was trimmed from 1489 → 321 lines). None were migrated to `test_protocol.py`. The fix code is intact, but the regression coverage is gone — anyone refactoring `reasoning_store.py` or `transform.py`'s recovery path could re-break this without a test failing.
-
-**Plan:** restore the originals from git history (commit `5f14da3`, the merge of PR #28) and re-home them in `test_protocol.py` as a `CrossModeAndModelTests` class. The original tests already operate against the in-process store and `prepare_upstream_request` API, so they should drop in with minimal adjustment for the post-PR-#33 imports and helper layout. Concretely:
-
-```bash
-# Recover the five tests verbatim from PR #28's commit.
-git show 5f14da3:tests/test_transform.py > /tmp/pr28_test_transform.py
-# Then port the relevant test methods into a new class inside
-# tests/test_protocol.py and adjust imports.
-```
-
-This should land before — or alongside — any further work on the cross-mode/model code path, so we don't rely on PR #28's mechanisms long-term without test coverage.
+All five were dropped by PR #33's test refactor (they were in `test_transform.py`, which was trimmed from 1489 → 321 lines). They are now restored in this branch as a `CrossModeAndModelTests` class in `tests/test_transform.py`, recovered verbatim from commit `5f14da3` and adapted for the post-PR-#33 imports and helper layout. They run as part of the standard `unittest discover` and lock in PR #28's mechanisms so anyone refactoring `reasoning_store.py` or `transform.py`'s recovery path will see a CI failure if they break it.
 
 ### What NI keys would still buy us
 
@@ -273,5 +262,5 @@ If we want a `CHANGELOG.md` we should write our own from our own commit history.
 Concrete next steps:
 
 1. **Done in this branch:** Change 2 (409 strategy guard) — one-line `server.py` fix + `test_recover_mode_does_not_short_circuit_with_409` regression test in `test_protocol.py`.
-2. **Pending:** Restore PR #28's five regression tests from commit `5f14da3`'s `tests/test_transform.py` into a `CrossModeAndModelTests` class in `test_protocol.py`. Pure test recovery; no production-code changes.
+2. **Done in this branch:** Restored PR #28's five regression tests from commit `5f14da3` as a `CrossModeAndModelTests` class in `tests/test_transform.py`. Pure test recovery; no production-code changes.
 3. **Investigate later:** Change 3 (non-DeepSeek model handling) only if real traffic logs start showing non-DeepSeek requests causing user-visible problems.
