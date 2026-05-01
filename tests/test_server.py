@@ -452,6 +452,13 @@ class HttpBoundaryTests(unittest.TestCase):
                 self._request(),
                 api_key="sk-from-cursor",
             )
+            # `└ stats` is emitted on the handler thread *after* the response
+            # body hits the socket, so the client may return before it lands.
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not any(
+                "└ stats" in record for record in captured.output
+            ):
+                time.sleep(0.01)
         output = "\n".join(captured.output)
         self.assertEqual(status, 200)
         # Single-line stage records keep the log readable.
