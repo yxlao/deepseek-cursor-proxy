@@ -1024,12 +1024,15 @@ class ReasoningStreamingProxyTests(unittest.TestCase):
             for line in body.splitlines()
             if line.startswith("data: {")
         ]
-        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "<think>\nNeed ")
+        self.assertEqual(
+            chunks[0]["choices"][0]["delta"]["content"],
+            "<details>\n<summary>Thinking</summary>\n\nNeed ",
+        )
         self.assertEqual(chunks[0]["choices"][0]["delta"]["reasoning_content"], "Need ")
         self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "context.")
         self.assertEqual(
             chunks[2]["choices"][0]["delta"]["content"],
-            "\n</think>\n\n" + FINAL_CONTENT,
+            "\n</details>\n\n" + FINAL_CONTENT,
         )
 
         stored_message = {
@@ -1085,7 +1088,7 @@ class ReasoningStreamingProxyTests(unittest.TestCase):
             trace["upstream"]["stream"]["chunks"][0]["line"],
         )
         self.assertIn(
-            "<think>",
+            "<details>",
             trace["cursor_response"]["stream"]["chunks"][0]["line"],
         )
         self.assertEqual(
@@ -1116,7 +1119,7 @@ class ReasoningStreamingProxyTests(unittest.TestCase):
         ]
         self.assertEqual(
             chunks[2]["choices"][0]["delta"]["content"],
-            "\n</think>\n\n" + RECOVERY_NOTICE_CONTENT + FINAL_CONTENT,
+            "\n</details>\n\n" + RECOVERY_NOTICE_CONTENT + FINAL_CONTENT,
         )
 
 

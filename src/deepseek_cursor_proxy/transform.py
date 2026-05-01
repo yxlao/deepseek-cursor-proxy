@@ -70,8 +70,16 @@ EFFORT_ALIASES = {
 }
 
 CURSOR_THINKING_BLOCK_RE = re.compile(
-    r"<(?:think|thinking)>[\s\S]*?(?:</(?:think|thinking)>|$)\s*",
-    re.IGNORECASE,
+    r"""
+    (?:
+        <(?:think|thinking)\b[^>]*>[\s\S]*?(?:</(?:think|thinking)>|\Z)
+        |
+        <details\b[^>]*>\s*
+        <summary\b[^>]*>\s*Thinking\s*</summary>
+        [\s\S]*?(?:</details>|\Z)
+    )\s*
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 RECOVERY_NOTICE_TEXT = "[deepseek-cursor-proxy] Refreshed reasoning_content history."

@@ -849,7 +849,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--display-reasoning",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Mirror reasoning_content into Cursor-visible <think> content",
+        help="Mirror reasoning_content into Cursor-visible Markdown details content",
     )
     parser.add_argument(
         "--cors",

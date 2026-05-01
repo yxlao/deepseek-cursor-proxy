@@ -7,8 +7,8 @@ from typing import Any
 from .reasoning_store import ReasoningStore
 
 
-THINKING_BLOCK_START = "<think>\n"
-THINKING_BLOCK_END = "\n</think>\n\n"
+THINKING_BLOCK_START = "<details>\n<summary>Thinking</summary>\n\n"
+THINKING_BLOCK_END = "\n</details>\n\n"
 
 
 @dataclass

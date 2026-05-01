@@ -60,6 +60,27 @@ class TransformTests(unittest.TestCase):
             ),
             "Final answer.",
         )
+        self.assertEqual(
+            strip_cursor_thinking_blocks(
+                "<details>\n"
+                "<summary>Thinking</summary>\n\n"
+                "Need context.\n"
+                "</details>\n\n"
+                "Final answer."
+            ),
+            "Final answer.",
+        )
+
+    def test_preserves_regular_markdown_details_in_assistant_content(self) -> None:
+        content = (
+            "<details>\n"
+            "<summary>Example</summary>\n\n"
+            "Visible details.\n"
+            "</details>\n\n"
+            "Final answer."
+        )
+
+        self.assertEqual(strip_cursor_thinking_blocks(content), content)
 
     def test_prepares_assistant_content_without_mirrored_thinking_blocks(
         self,
@@ -70,7 +91,13 @@ class TransformTests(unittest.TestCase):
                 {"role": "user", "content": "hello"},
                 {
                     "role": "assistant",
-                    "content": "<think>\nHidden.\n</think>\n\nVisible answer.",
+                    "content": (
+                        "<details>\n"
+                        "<summary>Thinking</summary>\n\n"
+                        "Hidden.\n"
+                        "</details>\n\n"
+                        "Visible answer."
+                    ),
                 },
                 {"role": "user", "content": "continue"},
             ],
@@ -736,7 +763,12 @@ class TransformTests(unittest.TestCase):
                     *prior,
                     {
                         "role": "assistant",
-                        "content": "<think>\nNeed to call the file tool.\n</think>\n\n",
+                        "content": (
+                            "<details>\n"
+                            "<summary>Thinking</summary>\n\n"
+                            "Need to call the file tool.\n"
+                            "</details>\n\n"
+                        ),
                         "tool_calls": [tool_call],
                     },
                 ],
