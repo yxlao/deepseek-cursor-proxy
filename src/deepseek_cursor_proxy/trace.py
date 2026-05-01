@@ -105,7 +105,10 @@ def message_summaries(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 len(reasoning) if isinstance(reasoning, str) else 0
             ),
             "has_recovery_notice": content.startswith(
-                "[deepseek-cursor-proxy] Recovered"
+                (
+                    "[deepseek-cursor-proxy] Refreshed reasoning_content history.",
+                    "[deepseek-cursor-proxy] Recovered",
+                )
             ),
         }
         summaries.append(summary)
@@ -203,7 +206,7 @@ class TraceWriter:
                 "pid": os.getpid(),
                 "base_dir": str(self.base_dir),
                 "session_dir": str(self.session_dir),
-                "format": "one JSON file per proxied POST request",
+                "format": "one JSON file per traced POST request",
             },
         )
 
@@ -221,6 +224,26 @@ class TraceRequest:
         self.data["request"]["body"] = payload
         self.data["request"]["summary"] = payload_summary(payload)
 
+    def record_cursor_body_bytes(self, body: bytes) -> None:
+        self.data["request"]["body_bytes"] = len(body)
+        text = body.decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            self.data["request"]["body"] = {"text": text}
+            return
+        self.data["request"]["body"] = payload
+        if isinstance(payload, dict):
+            self.data["request"]["summary"] = payload_summary(payload)
+
+    def record_cursor_body_omitted(
+        self, *, reason: str, body_bytes: int | None = None
+    ) -> None:
+        omitted: dict[str, Any] = {"reason": reason}
+        if body_bytes is not None:
+            omitted["body_bytes"] = body_bytes
+        self.data["request"]["body_omitted"] = omitted
+
     def record_transform(self, prepared: Any) -> None:
         self.data["transform"] = {
             "original_model": prepared.original_model,
@@ -232,6 +255,11 @@ class TraceRequest:
             "recovery_dropped_messages": prepared.recovery_dropped_messages,
             "recovery_notice": prepared.recovery_notice,
             "record_response_scope": prepared.record_response_scope,
+            "record_response_scopes": [
+                scope for scope, _messages in prepared.record_response_contexts
+            ],
+            "continued_recovery_boundary": prepared.continued_recovery_boundary,
+            "retired_prefix_messages": prepared.retired_prefix_messages,
             "reasoning_diagnostics": prepared.reasoning_diagnostics,
             "recovery_steps": prepared.recovery_steps,
             "upstream_request_summary": payload_summary(prepared.payload),

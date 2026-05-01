@@ -9,6 +9,8 @@ from .reasoning_store import ReasoningStore
 
 THINKING_BLOCK_START = "<think>\n"
 THINKING_BLOCK_END = "\n</think>\n\n"
+COLLAPSIBLE_THINKING_BLOCK_START = "<details>\n<summary>Thinking</summary>\n\n"
+COLLAPSIBLE_THINKING_BLOCK_END = "\n</details>\n\n"
 
 
 @dataclass
@@ -35,7 +37,7 @@ class StreamingChoice:
 class StreamAccumulator:
     def __init__(self) -> None:
         self.choices: dict[int, StreamingChoice] = {}
-        self._stored_choices: dict[int, str] = {}
+        self._stored_choices: dict[tuple[int, str], str] = {}
 
     def ingest_chunk(self, chunk: dict[str, Any]) -> None:
         choices = chunk.get("choices")
@@ -70,26 +72,70 @@ class StreamAccumulator:
 
             self._merge_tool_call_deltas(choice, delta.get("tool_calls"))
 
-    def store_reasoning(self, store: ReasoningStore, scope: str) -> int:
+    def store_reasoning(
+        self,
+        store: ReasoningStore,
+        scope: str,
+        cache_namespace: str = "",
+        prior_messages: list[dict[str, Any]] | None = None,
+    ) -> int:
         stored = 0
         for index, choice in self.choices.items():
-            stored += self._store_choice(index, choice, store, scope)
+            stored += self._store_choice(
+                index, choice, store, scope, "final", cache_namespace, prior_messages
+            )
         return stored
 
-    def store_finished_reasoning(self, store: ReasoningStore, scope: str) -> int:
+    def store_finished_reasoning(
+        self,
+        store: ReasoningStore,
+        scope: str,
+        cache_namespace: str = "",
+        prior_messages: list[dict[str, Any]] | None = None,
+    ) -> int:
         stored = 0
         for index, choice in self.choices.items():
             if choice.finish_reason is not None:
-                stored += self._store_choice(index, choice, store, scope, "final")
+                stored += self._store_choice(
+                    index,
+                    choice,
+                    store,
+                    scope,
+                    "final",
+                    cache_namespace,
+                    prior_messages,
+                )
         return stored
 
-    def store_ready_reasoning(self, store: ReasoningStore, scope: str) -> int:
+    def store_ready_reasoning(
+        self,
+        store: ReasoningStore,
+        scope: str,
+        cache_namespace: str = "",
+        prior_messages: list[dict[str, Any]] | None = None,
+    ) -> int:
         stored = 0
         for index, choice in self.choices.items():
             if choice.finish_reason is not None:
-                stored += self._store_choice(index, choice, store, scope, "final")
+                stored += self._store_choice(
+                    index,
+                    choice,
+                    store,
+                    scope,
+                    "final",
+                    cache_namespace,
+                    prior_messages,
+                )
             elif self._has_identified_tool_calls(choice):
-                stored += self._store_choice(index, choice, store, scope, "tool_call")
+                stored += self._store_choice(
+                    index,
+                    choice,
+                    store,
+                    scope,
+                    "tool_call",
+                    cache_namespace,
+                    prior_messages,
+                )
         return stored
 
     def messages(self) -> list[dict[str, Any]]:
@@ -141,14 +187,22 @@ class StreamAccumulator:
         store: ReasoningStore,
         scope: str,
         stage: str = "final",
+        cache_namespace: str = "",
+        prior_messages: list[dict[str, Any]] | None = None,
     ) -> int:
         stage_rank = {"tool_call": 1, "final": 2}
-        previous_stage = self._stored_choices.get(index)
+        storage_key = (index, scope)
+        previous_stage = self._stored_choices.get(storage_key)
         if stage_rank.get(previous_stage or "", 0) >= stage_rank.get(stage, 0):
             return 0
-        stored = store.store_assistant_message(choice.to_message(), scope)
+        stored = store.store_assistant_message(
+            choice.to_message(),
+            scope,
+            cache_namespace,
+            prior_messages,
+        )
         if stored:
-            self._stored_choices[index] = stage
+            self._stored_choices[storage_key] = stage
         return stored
 
     def _has_identified_tool_calls(self, choice: StreamingChoice) -> bool:
@@ -160,9 +214,15 @@ class StreamAccumulator:
 class CursorReasoningDisplayAdapter:
     """Mirror reasoning_content into content for Cursor's visible thinking UI path."""
 
-    def __init__(self) -> None:
+    def __init__(self, collapsible: bool = True) -> None:
         self._open_choices: set[int] = set()
         self._last_chunk_metadata: dict[str, Any] = {}
+        self._block_start = (
+            COLLAPSIBLE_THINKING_BLOCK_START if collapsible else THINKING_BLOCK_START
+        )
+        self._block_end = (
+            COLLAPSIBLE_THINKING_BLOCK_END if collapsible else THINKING_BLOCK_END
+        )
 
     def rewrite_chunk(self, chunk: dict[str, Any]) -> None:
         self._remember_chunk_metadata(chunk)
@@ -183,7 +243,7 @@ class CursorReasoningDisplayAdapter:
             reasoning_content = delta.get("reasoning_content")
             if isinstance(reasoning_content, str) and reasoning_content:
                 if index not in self._open_choices:
-                    mirrored_parts.append(THINKING_BLOCK_START)
+                    mirrored_parts.append(self._block_start)
                     self._open_choices.add(index)
                 mirrored_parts.append(reasoning_content)
 
@@ -194,7 +254,7 @@ class CursorReasoningDisplayAdapter:
                 or raw_choice.get("finish_reason") is not None
             )
             if should_close:
-                mirrored_parts.append(THINKING_BLOCK_END)
+                mirrored_parts.append(self._block_end)
                 self._open_choices.discard(index)
 
             if not mirrored_parts:
@@ -210,7 +270,7 @@ class CursorReasoningDisplayAdapter:
         choices = [
             {
                 "index": index,
-                "delta": {"content": THINKING_BLOCK_END},
+                "delta": {"content": self._block_end},
                 "finish_reason": None,
             }
             for index in sorted(self._open_choices)
@@ -232,3 +292,34 @@ class CursorReasoningDisplayAdapter:
         }
         if metadata:
             self._last_chunk_metadata.update(metadata)
+
+
+def fold_reasoning_into_content(
+    response_payload: dict[str, Any],
+    collapsible: bool,
+) -> None:
+    """Mirror `reasoning_content` into the visible `content` field for
+    non-streaming responses, matching the streaming `<details>` layout."""
+    block_start = (
+        COLLAPSIBLE_THINKING_BLOCK_START if collapsible else THINKING_BLOCK_START
+    )
+    block_end = COLLAPSIBLE_THINKING_BLOCK_END if collapsible else THINKING_BLOCK_END
+    choices = response_payload.get("choices")
+    if not isinstance(choices, list):
+        return
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        reasoning = message.get("reasoning_content")
+        if not isinstance(reasoning, str) or not reasoning:
+            continue
+        content = message.get("content")
+        message["content"] = (
+            block_start
+            + reasoning
+            + block_end
+            + (content if isinstance(content, str) else "")
+        )

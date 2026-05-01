@@ -8,7 +8,7 @@ This proxy can also help **other applications and coding agents** beyond Cursor 
 ## What It Does
 
 - ✅ Injects `reasoning_content` into outgoing tool-call requests since Cursor does not include the field, restoring previously cached reasoning from regular and streamed DeepSeek responses. See [DeepSeek docs](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) for more details.
-- ✅ Displays DeepSeek's thinking tokens in Cursor by forwarding them into Cursor-visible `<think>...</think>` blocks. In BYOK (bring your own key) mode, Cursor renders these thinking blocks as plain text instead of a native collapsible thinking view. You can disable thinking token display with `--no-display-reasoning` or setting `display_reasoning: false` in the config file.
+- ✅ Displays DeepSeek's thinking tokens in Cursor by forwarding them into Cursor-visible collapsible Markdown `<details><summary>Thinking</summary>...</details>` blocks.
 - ✅ Starts an ngrok tunnel so Cursor can reach the local proxy through a public HTTPS URL.
 - ✅ Provides other compatibility fixes to make DeepSeek models run well in Cursor.
 
@@ -48,30 +48,7 @@ brew install ngrok
 ngrok config add-authtoken <your-ngrok-token>
 ```
 
-### Step 2: Add Cursor Custom Model
-
-In Cursor, add the DeepSeek custom model and point it at this proxy:
-
-- Model: `deepseek-v4-pro`
-- API Key: your DeepSeek API key
-- Base URL: your ngrok HTTPS URL with the `/v1` API version path
-
-The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is used as a fallback only when a request does not include a model.
-
-For example, if ngrok dashboard shows `https://example.ngrok-free.dev`, use:
-
-```text
-https://example.ngrok-free.dev/v1
-```
-
-<img src="assets/cursor_config.png" width="600" alt="Cursor settings for DeepSeek through the proxy">
-
-Note: you can toggle the custom API on and off with:
-
-- macOS: `Cmd+Shift+0`
-- Windows/Linux: `Ctrl+Shift+0`
-
-### Step 3: Install and Start the Proxy Server
+### Step 2: Install and Start the Proxy Server
 
 **Run with UV**
 
@@ -126,6 +103,29 @@ deepseek-cursor-proxy --no-ngrok
 deepseek-cursor-proxy --port 9000
 ```
 
+### Step 3: Add Cursor Custom Model
+
+In Cursor, add the DeepSeek custom model and point it at this proxy:
+
+- Model: `deepseek-v4-pro`
+- API Key: your DeepSeek API key
+- Base URL: your ngrok HTTPS URL with the `/v1` API version path
+
+The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is used as a fallback only when a request does not include a model.
+
+For example, if ngrok dashboard shows `https://example.ngrok-free.dev`, use:
+
+```text
+https://example.ngrok-free.dev/v1
+```
+
+<img src="assets/cursor_config.png" width="600" alt="Cursor settings for DeepSeek through the proxy">
+
+Note: you can toggle the custom API on and off with:
+
+- macOS: `Cmd+Shift+0`
+- Windows/Linux: `Ctrl+Shift+0`
+
 ### Step 4: Chat with DeepSeek in Cursor
 
 Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.
@@ -134,10 +134,10 @@ Select `deepseek-v4-pro` in Cursor and use chat or agent mode as usual.
 
 ## How It Works
 
-- **Core fix:** DeepSeek's [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) requires `reasoning_content` from assistant tool-call messages to be passed back in subsequent requests, but Cursor omits this field, causing a 400 error. The proxy (`Cursor → ngrok → proxy → DeepSeek API`) stores `reasoning_content` from every DeepSeek response in a local SQLite cache, keyed by message signature, tool-call ID, and tool-call function signature, and patches outgoing requests with missing `reasoning_content` before they reach DeepSeek. On a cold cache (proxy restart, model switch), it logs and drops unrecoverable history, continues from the latest user request, and prefixes the next Cursor response with a notice.
+- **Core fix:** DeepSeek [thinking-mode tool calls](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls) require the complete **multi-round** `reasoning_content` chain to be sent back in later requests. Cursor omits that field, causing a 400 error. The proxy (`Cursor -> ngrok -> proxy -> DeepSeek API`) stores DeepSeek's original `reasoning_content` and patches missing blocks back into outgoing tool-call history.
 - **Multi-conversation isolation:** To avoid collisions across concurrent conversations, the proxy scopes cache keys by a SHA-256 hash of the canonical conversation prefix (roles, content, and tool calls, excluding `reasoning_content`) plus the upstream model, configuration, and an API-key hash. Different threads get different scopes, so reused tool-call IDs do not collide. Byte-identical cloned histories produce identical scopes.
 - **Context caching compatibility:** The proxy preserves compatibility by never injecting synthetic thread IDs, timestamps, or cache-control messages. It restores `reasoning_content` as the exact original string, so repeated prefixes remain intact for [DeepSeek context cache](https://api-docs.deepseek.com/guides/kv_cache). Cache hit rates are logged in the terminal output.
-- **Additional compatibility fixes:** Beyond reasoning repair, the proxy converts legacy `functions`/`function_call` fields to `tools`/`tool_choice`, preserves required and named tool-choice semantics, normalizes `reasoning_effort` aliases, strips mirrored `<think>` blocks from assistant content, flattens multi-part content arrays to plain text, and mirrors `reasoning_content` into Cursor-visible `<think>...</think>` blocks.
+- **Additional compatibility fixes:** Beyond reasoning repair, the proxy converts legacy `functions`/`function_call` fields to `tools`/`tool_choice`, preserves required and named tool-choice semantics, normalizes `reasoning_effort` aliases, strips mirrored thinking display blocks from assistant content, flattens multi-part content arrays to plain text, and mirrors `reasoning_content` into Cursor-visible Markdown details blocks.
 
 ## Development
 

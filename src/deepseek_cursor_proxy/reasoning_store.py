@@ -73,6 +73,13 @@ def message_signature(message: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _sha256_json(payload: Any) -> str:
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def canonical_scope_message(message: dict[str, Any]) -> dict[str, Any]:
     canonical: dict[str, Any] = {"role": message.get("role")}
     for key in ("content", "name", "tool_call_id", "prefix"):
@@ -92,10 +99,84 @@ def conversation_scope(messages: list[dict[str, Any]], namespace: str = "") -> s
     payload: Any = scope_messages
     if namespace:
         payload = {"namespace": namespace, "messages": scope_messages}
-    canonical = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    return _sha256_json(payload)
+
+
+def turn_context_signature(prior_messages: list[dict[str, Any]]) -> str:
+    last_user_index = next(
+        (
+            index
+            for index in range(len(prior_messages) - 1, -1, -1)
+            if prior_messages[index].get("role") == "user"
+        ),
+        -1,
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    start_index = 0
+    if last_user_index != -1:
+        start_index = last_user_index
+        while start_index > 0 and prior_messages[start_index - 1].get("role") == "user":
+            start_index -= 1
+
+    context_messages = [
+        canonical_scope_message(message)
+        for message in prior_messages[start_index:]
+        if message.get("role") != "system"
+    ]
+    return _sha256_json(context_messages)
+
+
+def scoped_reasoning_keys(message: dict[str, Any], scope: str) -> list[str]:
+    keys = [f"scope:{scope}:signature:{message_signature(message)}"]
+    keys.extend(
+        f"scope:{scope}:tool_call:{tool_call_id}"
+        for tool_call_id in tool_call_ids(message)
+    )
+    keys.extend(
+        f"scope:{scope}:tool_call_signature:{tool_call_signature(tool_call)}"
+        for tool_call in (message.get("tool_calls") or [])
+        if isinstance(tool_call, dict)
+    )
+    # Recovery-of-last-resort key. Catches the case where a streaming response
+    # was interrupted (user pressed Stop) before the tool_call.id chunk arrived,
+    # so neither tool_call_id nor tool_call_signature (which canonicalizes
+    # arguments) survives the round-trip through Cursor's transcript.
+    keys.extend(
+        f"scope:{scope}:tool_name:{tool_name}"
+        for tool_name in tool_call_names(message)
+    )
+    return keys
+
+
+def portable_reasoning_keys(
+    message: dict[str, Any],
+    cache_namespace: str,
+    prior_messages: list[dict[str, Any]],
+) -> list[str]:
+    if not cache_namespace:
+        return []
+
+    turn_signature = turn_context_signature(prior_messages)
+    keys = [
+        f"namespace:{cache_namespace}:turn:{turn_signature}:"
+        f"signature:{message_signature(message)}"
+    ]
+    keys.extend(
+        f"namespace:{cache_namespace}:turn:{turn_signature}:"
+        f"tool_call:{tool_call_id}"
+        for tool_call_id in tool_call_ids(message)
+    )
+    keys.extend(
+        f"namespace:{cache_namespace}:turn:{turn_signature}:"
+        f"tool_call_signature:{tool_call_signature(tool_call)}"
+        for tool_call in (message.get("tool_calls") or [])
+        if isinstance(tool_call, dict)
+    )
+    keys.extend(
+        f"namespace:{cache_namespace}:turn:{turn_signature}:"
+        f"tool_name:{tool_name}"
+        for tool_name in tool_call_names(message)
+    )
+    return keys
 
 
 class ReasoningStore:
@@ -166,52 +247,64 @@ class ReasoningStore:
             return None
         return str(row[0])
 
-    def store_assistant_message(self, message: dict[str, Any], scope: str) -> int:
+    def store_assistant_message(
+        self,
+        message: dict[str, Any],
+        scope: str,
+        cache_namespace: str = "",
+        prior_messages: list[dict[str, Any]] | None = None,
+    ) -> int:
         if message.get("role") != "assistant":
             return 0
         reasoning = message.get("reasoning_content")
         if not isinstance(reasoning, str):
             return 0
 
-        keys = [f"scope:{scope}:signature:{message_signature(message)}"]
-        keys.extend(
-            f"scope:{scope}:tool_call:{tool_call_id}"
-            for tool_call_id in tool_call_ids(message)
-        )
-        keys.extend(
-            f"scope:{scope}:tool_call_signature:{tool_call_signature(tool_call)}"
-            for tool_call in (message.get("tool_calls") or [])
-            if isinstance(tool_call, dict)
-        )
-        keys.extend(
-            f"scope:{scope}:tool_name:{tool_name}"
-            for tool_name in tool_call_names(message)
-        )
+        keys = scoped_reasoning_keys(message, scope)
+        if prior_messages is not None:
+            keys.extend(
+                portable_reasoning_keys(message, cache_namespace, prior_messages)
+            )
+        keys = list(dict.fromkeys(keys))
         for key in keys:
             self.put(key, reasoning, message)
         return len(keys)
 
-    def lookup_for_message(self, message: dict[str, Any], scope: str) -> str | None:
-        reasoning = self.get(f"scope:{scope}:signature:{message_signature(message)}")
-        if reasoning is not None:
-            return reasoning
-        for tool_call_id in tool_call_ids(message):
-            reasoning = self.get(f"scope:{scope}:tool_call:{tool_call_id}")
-            if reasoning is not None:
-                return reasoning
-        for tool_call in message.get("tool_calls") or []:
-            if not isinstance(tool_call, dict):
-                continue
-            reasoning = self.get(
-                f"scope:{scope}:tool_call_signature:{tool_call_signature(tool_call)}"
+    def lookup_for_message(
+        self,
+        message: dict[str, Any],
+        scope: str,
+        cache_namespace: str = "",
+        prior_messages: list[dict[str, Any]] | None = None,
+    ) -> str | None:
+        keys = scoped_reasoning_keys(message, scope)
+        if prior_messages is not None:
+            keys.extend(
+                portable_reasoning_keys(message, cache_namespace, prior_messages)
             )
-            if reasoning is not None:
-                return reasoning
-        for tool_name in tool_call_names(message):
-            reasoning = self.get(f"scope:{scope}:tool_name:{tool_name}")
+        for key in keys:
+            reasoning = self.get(key)
             if reasoning is not None:
                 return reasoning
         return None
+
+    def backfill_portable_aliases(
+        self,
+        message: dict[str, Any],
+        reasoning: str,
+        cache_namespace: str,
+        prior_messages: list[dict[str, Any]],
+    ) -> int:
+        if not isinstance(reasoning, str):
+            return 0
+        keys = portable_reasoning_keys(message, cache_namespace, prior_messages)
+        if not keys:
+            return 0
+        message_with_reasoning = dict(message)
+        message_with_reasoning["reasoning_content"] = reasoning
+        for key in dict.fromkeys(keys):
+            self.put(key, reasoning, message_with_reasoning)
+        return len(keys)
 
     def clear(self) -> int:
         with self._lock:
