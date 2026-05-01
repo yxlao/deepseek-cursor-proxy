@@ -40,6 +40,13 @@ SUPPORTED_REQUEST_FIELDS = {
     "frequency_penalty",
     "logprobs",
     "top_logprobs",
+    # Standard OpenAI Chat Completions fields that DeepSeek either honors or
+    # safely ignores. Cursor and most OpenAI SDKs send these unconditionally,
+    # so forwarding keeps clients happy and avoids log spam.
+    "user",
+    "seed",
+    "n",
+    "logit_bias",
 }
 
 MESSAGE_FIELDS = {
