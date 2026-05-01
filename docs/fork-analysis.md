@@ -190,13 +190,11 @@ We should also add a `test_protocol.py` test that constructs one of the no-user-
 
 ## Change 3 — Passthrough non-DeepSeek models
 
-**Status:** not on our `main`.
+**Status:** not on our `main`. **Verdict: investigate later, do nothing for now.**
 
-### The problem
+### The problem the fork was trying to solve
 
-Cursor lets you set a custom URL for the OpenAI-compatible endpoint. Once you do, **every** chat-completions request goes through that URL — not just calls to your DeepSeek model. That includes `/summarize` (Cursor's auto-summary), Composer, GPT-4o requests for other features, and so on.
-
-Our proxy currently handles those by silently rewriting the model name to `deepseek-v4-pro` (with a `WARNING` log we just added in PR #33). The result: Cursor's `/summarize` call asks for `gpt-4o-mini` but receives a DeepSeek answer — wrong tokenizer, wrong style, sometimes nonsense.
+Cursor lets you set a custom URL for the OpenAI-compatible endpoint. The fork's CHANGELOG claims that once you do, **every** chat-completions request goes through that URL — not just calls to your DeepSeek model — including `/summarize` (Cursor's auto-summary), Composer, GPT-4o requests, and so on. Our proxy then silently rewrites the model name to `deepseek-v4-pro` (with a `WARNING` log we added in PR #33), so Cursor's `/summarize` call asks for `gpt-4o-mini` but receives a DeepSeek answer.
 
 ### The fork's fix
 
@@ -206,39 +204,46 @@ When the requested model does not start with `deepseek-`:
 2. Forward the request payload byte-for-byte to a new configurable upstream — `passthrough_url`, defaulting to `https://api.openai.com`.
 3. Relay the response (regular or SSE) byte-for-byte back to Cursor.
 
-This is implemented as ~180 lines added to `server.py` (`_proxy_passthrough`, `_relay_passthrough_regular`, `_relay_passthrough_streaming`) plus a new config field.
+Implemented as ~180 lines added to `server.py` plus a new `passthrough_url` config field.
 
-### Why this fix is broken
+### Why the fork's fix is broken
 
-The proxy forwards **Cursor's `Authorization` header** to the passthrough URL. But Cursor's bearer token is the user's **DeepSeek** API key (the user typed it into Cursor's "API key" field). Sending a DeepSeek key to OpenAI's `/v1/chat/completions` produces a 401 instantly — OpenAI does not know what to do with it.
+Two layers of "broken", in order of seriousness:
 
-So the passthrough only "works" if the user happened to configure their OpenAI key in Cursor's API-key field. But then their DeepSeek calls would fail, because DeepSeek does not know what to do with an OpenAI key. There is no setup where both work simultaneously, and the fork does not add a separate `passthrough_api_key` config to disentangle them.
+**1. Auth doesn't line up.** The proxy forwards Cursor's `Authorization` header to the passthrough URL. Cursor's bearer is the user's *DeepSeek* API key (it's what they typed into Cursor's API-key field). Sending a DeepSeek key to OpenAI 401s instantly. The fork ships ~180 lines of code that won't authenticate in production.
 
-In other words: the fork ships ~180 lines of code that 401 in production for almost everyone.
+**2. There is no "right" passthrough destination, even with proper auth.** The non-DeepSeek requests Cursor would normally make for `/summarize`, GPT-4o calls, Composer, etc. don't go to OpenAI directly — they go to **Cursor's own backend** (`api.cursor.com` / `api.cursor.sh`), which proxies to OpenAI/Anthropic on Cursor's dime via the user's Cursor subscription. We can't replicate that routing because:
 
-A complete passthrough would also need:
+- We don't have an OpenAI API key (the user only set up DeepSeek auth).
+- We don't have Anthropic credentials.
+- We **definitely** don't have the user's Cursor session token to call `api.cursor.com` on their behalf — that's gated by Cursor's own auth, invisible to us, and probably not even valid as a generic bearer token.
 
-- A separate `passthrough_api_key` config field (and a way to thread it through without leaking it to DeepSeek).
-- Probably a way to map model names (`gpt-4o-mini` from Cursor → whatever the upstream actually calls it).
-- Documentation around tenancy, cost, and which features Cursor will then route through us.
+So the fork's choice of OpenAI as the default `passthrough_url` is a guess that only works in one specific configuration (user has a paid OpenAI account *and* swaps the DeepSeek key in Cursor for an OpenAI one, at which point DeepSeek calls themselves break). There is no setup where both work simultaneously without invasive config redesign.
 
-That is real work, real surface area, and real risk.
+### Empirical observation: it might not even be a problem in practice
+
+Looking at real proxy logs from this user's setup:
+
+```
+INFO ┌ cursor  model=deepseek-v4-pro messages=3 tools=19
+INFO ┌ cursor  model=deepseek-v4-pro messages=7 tools=19
+INFO ┌ cursor  model=deepseek-v4-pro messages=9 tools=19
+```
+
+Every request is `deepseek-v4-pro`. **No `gpt-4o-mini`, no `composer-2`, no `/summarize` calls.** Cursor appears to keep its internal/non-DeepSeek calls on its own backend in current versions, and only routes the user-selected DeepSeek model through the custom URL. That contradicts the fork's premise that "every request" gets diverted.
+
+So either the fork was based on older Cursor behavior, an edge config, or a misunderstanding. Either way, the problem they're solving isn't visible in our actual usage.
 
 ### Recommendation
 
-**Don't take this as-is.** A simpler, equivalent UX improvement is to **stop silently rewriting non-DeepSeek models** and instead return a clean 400:
+**Investigate later. Leave the current silent-rewrite + WARNING in place for now.** Reasons:
 
-```json
-{
-  "error": {
-    "message": "deepseek-cursor-proxy only serves models starting with `deepseek-`; received `gpt-4o-mini`. Configure that model directly in Cursor's settings instead of routing it through this proxy.",
-    "type": "unsupported_model",
-    "code": "unsupported_model"
-  }
-}
-```
+- Real traffic shows non-DeepSeek requests aren't even hitting the proxy — there's nothing to fix yet.
+- There is no valid passthrough destination (Cursor's backend is gated, no alternative provider creds), so the fork's approach is structurally broken regardless of how we wire it up.
+- The current silent rewrite is a harmless fallback for the rare case a non-DeepSeek request *does* slip through (older Cursor versions, edge features, future changes).
+- A WARNING log is already in place, so a curious user can find out.
 
-That is a few lines, no new pipeline, no auth confusion, and tells the user exactly what went wrong and how to fix it. We are honest about being a DeepSeek-only proxy. If passthrough ever becomes a real requirement, we can implement it correctly with an opt-in config and a separate auth path; we shouldn't ship a half-working version in the meantime.
+When to revisit: if non-DeepSeek requests start showing up in real proxy logs *and* they're causing user-visible bad behavior. At that point the most honest fix is probably a clean 400 ("this proxy only serves `deepseek-*` models") rather than passthrough — but that decision can wait until we actually see the traffic.
 
 ---
 
@@ -262,10 +267,11 @@ If we want a `CHANGELOG.md` we should write our own from our own commit history.
 |---|---|---|
 | **1. NI cache keys** | **Likely skip** | PR #28 already solves the common cases (Pro↔Flash family normalization, Agent↔Plan portable keys, recovery-boundary handling). NI keys would only help rare switches (`thinking`, `reasoning_effort`, `base_url`); marginal benefit, real complexity, and the fork's version leaks reasoning across tenants. |
 | **2. 409 strategy guard** | **Take** | One-line correctness fix; current code 409s in `recover` mode in edge cases despite the user's explicit opt-in. |
-| **3. Non-DeepSeek passthrough** | **Don't take** | The auth model is wrong (forwards DeepSeek key to OpenAI → 401). Better fix: return a clear 400 instead of silently rewriting. |
+| **3. Non-DeepSeek passthrough** | **Investigate later** | Fork's auth model is wrong (forwards DeepSeek key to OpenAI → 401), and the "real" destination (Cursor's own backend) is gated and unreachable from us. Real proxy logs show non-DeepSeek requests aren't even hitting us in practice, so there's nothing user-visible to fix yet. |
 | **4. CHANGELOG** | Optional | Write our own if we want one; theirs is partly out of date relative to our current `main`. |
 
-If you agree with these, the natural next step is one PR off `main` doing:
+Concrete next steps:
 
-1. The 409 strategy guard (one-line `server.py` change + a `test_protocol.py` test for `recover` mode with a non-recoverable history).
-2. A clean 400 response for non-`deepseek-*` models in `server.py`, replacing today's silent rewrite + warning log.
+1. **Done in this branch:** Change 2 (409 strategy guard) — one-line `server.py` fix + `test_recover_mode_does_not_short_circuit_with_409` regression test in `test_protocol.py`.
+2. **Pending:** Restore PR #28's five regression tests from commit `5f14da3`'s `tests/test_transform.py` into a `CrossModeAndModelTests` class in `test_protocol.py`. Pure test recovery; no production-code changes.
+3. **Investigate later:** Change 3 (non-DeepSeek model handling) only if real traffic logs start showing non-DeepSeek requests causing user-visible problems.
