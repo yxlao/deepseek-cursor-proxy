@@ -10,14 +10,14 @@ One change from the fork — collapsible `<details>` blocks for the thinking dis
 
 ## Change 1 — Namespace-Independent (NI) cache keys
 
-**Status:** not on our `main`.
+**Status:** not on our `main`. **However, the underlying problem is largely already solved by PR #28**, which is on our `main`. See below.
 
 ### What is the problem they are trying to solve?
 
 The proxy stores DeepSeek's `reasoning_content` in a SQLite cache, keyed by something called a **cache namespace**. The namespace is a hash of:
 
 - The upstream base URL
-- The model family (e.g. `deepseek-v4-pro` vs `deepseek-v4-flash`)
+- The model family
 - The thinking mode (`enabled` vs `disabled`)
 - The reasoning effort
 - A hash of the API key
@@ -26,11 +26,9 @@ This namespace is intentional — it isolates one user's reasoning content from 
 
 But it has a side effect. Imagine the user has a long conversation going with `deepseek-v4-pro` in Cursor's **Agent** mode. They've sent many tool-call turns; the proxy has cached the `reasoning_content` for each assistant message. All of those cache entries are stored under namespace `A`.
 
-Now the user switches Cursor to **Ask** mode, or switches the model to `deepseek-v4-flash`. The thinking-mode default may change, the reasoning effort may change, the model family changed — so the namespace becomes `B`. None of the cache entries under namespace `A` are visible from namespace `B`.
+Now the user switches Cursor to **Ask** mode, or switches the model to `deepseek-v4-flash`. If the namespace changes to `B`, none of the cache entries under namespace `A` are visible.
 
-The proxy then sees assistant messages in the conversation history that have tool-calls but no `reasoning_content`, can't find any matching cache entry under the new namespace, marks them as "missing", and falls back to the `latest_user` recovery strategy — which **strips out almost all the conversation history** down to the latest user message and prefixes the response with `[deepseek-cursor-proxy] Refreshed reasoning_content history.`.
-
-To the user this looks like the proxy ate their conversation. From the proxy's perspective everything worked correctly — but the namespace boundary turned a model-switch into a context-loss event.
+The proxy then sees assistant messages in the conversation history that have tool-calls but no `reasoning_content`, can't find any matching cache entry under the new namespace, marks them as "missing", and falls back to the `latest_user` recovery strategy — which strips out almost all the conversation history down to the latest user message and prefixes the response with `[deepseek-cursor-proxy] Refreshed reasoning_content history.`. To the user this looks like the proxy ate their conversation.
 
 ### How does the fork fix it?
 
@@ -42,22 +40,68 @@ ni:tool_call:{tool_call_id}
 ni:tool_call_signature:{tool_call_signature}
 ```
 
-These are stored *alongside* the existing scope/portable keys. Whenever the proxy stores reasoning, it also stores it under these "namespace-independent" keys. Whenever it looks up reasoning, after trying the scope-based and namespace-portable keys, it falls back to looking under these NI keys.
+These are stored *alongside* the existing scope/portable keys. Whenever the proxy stores reasoning, it also stores it under these "namespace-independent" keys. Whenever it looks up reasoning, after trying the scope-based and namespace-portable keys, it falls back to looking under these NI keys. Since the NI key is derived purely from the message content (not from the namespace), it survives any model/mode/thinking switch.
 
-Since the NI key is derived purely from the message content (not from the namespace), it survives any model/mode/thinking switch. The cached reasoning becomes findable again, the proxy patches it back in, and the conversation continues without `latest_user` recovery firing.
+### What our `main` already does (PR #28)
+
+I verified the following by reading the code, not just the PR description.
+
+1. **Family normalization** — `reasoning_model_family()` in `transform.py:670` maps both `deepseek-v4-pro` and `deepseek-v4-flash` to the family `deepseek-v4`. The namespace (`reasoning_cache_namespace()` in `transform.py:676`) hashes the *family*, not the model, so switching between Pro and Flash is invisible to the cache. **Caveat:** the family list is a hardcoded set `{deepseek-v4-pro, deepseek-v4-flash}`. A future `deepseek-v5-pro` will diverge silently until we update this function — that is a maintenance hazard worth tracking.
+
+2. **Portable turn-scoped keys** — `portable_reasoning_keys()` in `reasoning_store.py:131` builds keys of the form `namespace:{ns}:turn:{turn_signature}:signature:{...}`. The `turn_signature` (`turn_context_signature()` in `reasoning_store.py:94`) hashes only messages from the latest user turn onward, **explicitly skipping system messages**. So even when Cursor's Agent↔Plan mode swap changes the system prompt or the tool surface, past assistant messages keep the same turn signature and are still findable.
+
+3. **Strict-hit backfill** — `transform.py:303` calls `store.backfill_portable_aliases()` whenever a scope-only key hits. Existing scope-keyed entries become mode-stable on the way through, without requiring a fresh write.
+
+4. **Recovery-boundary handling** — `active_messages_from_recovery_boundary()` retires the prefix when a recovery notice is detected; the `continued_recovery_boundary` flag stops the recovery loop from cascading on every later request.
+
+PR #28's validation trace: 21 requests across Agent↔Plan and Pro↔Flash, only **one** recovery triggered (when the user routed through `composer-2` in the middle and came back), and **no cascade** afterward. Screenshots in the PR show the exact traces.
+
+So in practice, on our current `main`:
+
+- Pro↔Flash switching: no namespace change, cache hits cleanly. No NI keys needed.
+- Agent↔Plan switching (within same model/mode): portable keys catch it. No NI keys needed.
+- Going through a non-DeepSeek model and back: triggers one recovery, then continues cleanly. PR #28 documents this as "expected".
+
+**Action item — restore PR #28's regression tests.** PR #28 originally shipped five regression tests in `tests/test_transform.py`:
+
+- `test_deepseek_pro_and_flash_share_reasoning_namespace`
+- `test_strict_hit_backfills_portable_cache_for_mode_switch`
+- `test_portable_turn_cache_restores_final_assistant_after_tool_result`
+- `test_portable_turn_cache_isolated_for_reused_tool_call_id`
+- `test_recovered_response_is_recorded_under_pre_recovery_scope`
+
+All five were dropped by PR #33's test refactor (they were in `test_transform.py`, which was trimmed from 1489 → 321 lines). None were migrated to `test_protocol.py`. The fix code is intact, but the regression coverage is gone — anyone refactoring `reasoning_store.py` or `transform.py`'s recovery path could re-break this without a test failing.
+
+**Plan:** restore the originals from git history (commit `5f14da3`, the merge of PR #28) and re-home them in `test_protocol.py` as a `CrossModeAndModelTests` class. The original tests already operate against the in-process store and `prepare_upstream_request` API, so they should drop in with minimal adjustment for the post-PR-#33 imports and helper layout. Concretely:
+
+```bash
+# Recover the five tests verbatim from PR #28's commit.
+git show 5f14da3:tests/test_transform.py > /tmp/pr28_test_transform.py
+# Then port the relevant test methods into a new class inside
+# tests/test_protocol.py and adjust imports.
+```
+
+This should land before — or alongside — any further work on the cross-mode/model code path, so we don't rely on PR #28's mechanisms long-term without test coverage.
+
+### What NI keys would still buy us
+
+NI keys would close gaps that PR #28 does *not* cover:
+
+- Switching `thinking` (`enabled`↔`disabled`)
+- Switching `reasoning_effort` (e.g. `high`↔`max`)
+- Switching `base_url`
+- Eliminating that one "expected" recovery when bouncing through a non-DeepSeek model
+
+These are all real, but they are also rare and arguably *intentional* user actions (the user is saying "I want a different mode now"). It is not obviously wrong for the proxy to treat those as a fresh boundary.
 
 ### Trade-off
 
-The NI key includes neither model, mode, nor **API key hash**. That last omission is meaningful:
+The fork's NI key drops not just the model and mode but also the **API key hash**. That last omission is meaningful:
 
 - On a single-user local proxy: harmless. There is only one user.
-- On a shared proxy (anyone running this in a multi-tenant context): **the cache becomes visible across users**. If user X and user Y happen to send an assistant message with identical content + tool calls, user Y's lookup finds user X's reasoning. The fork's authors dismiss this as "harmless because same content means same reasoning" — that is true for the *content* but loses *tenant isolation*.
+- On a shared proxy: the cache becomes visible across users. If user X and user Y happen to send an assistant message with identical content + tool calls, user Y's lookup finds user X's reasoning. The fork dismisses this as "harmless because same content means same reasoning" — that is true for the *content* but loses *tenant isolation*.
 
-The fork's authors are running this for themselves locally, so they don't care. We need to decide whether we want to defend the multi-tenant case.
-
-### Recommendation
-
-**Take the idea, but include `auth_hash` in the NI key**:
+If we want NI keys, we should at minimum scope them by `auth_hash`:
 
 ```
 ni:auth:{auth_hash}:signature:{message_signature}
@@ -65,7 +109,11 @@ ni:auth:{auth_hash}:tool_call:{tool_call_id}
 ni:auth:{auth_hash}:tool_call_signature:{tool_call_signature}
 ```
 
-That keeps the user's cache reachable across model/mode/thinking changes (which is what the fork was trying to fix), while preserving the per-user isolation that our existing namespace was already giving us. It is a small tweak to their patch.
+### Recommendation
+
+**Likely skip.** The motivating problem (cross-mode/model context loss) is already addressed by PR #28 for the common cases. NI keys would only help with rare config switches (`thinking`, `reasoning_effort`, `base_url`), and even there the user-visible damage is one recovery notice — not the cascading context loss the fork's CHANGELOG describes. The marginal benefit is small, the complexity is non-trivial (two more key namespaces, more lookups per request, more storage), and the fork's specific implementation has a tenant-isolation hole.
+
+If we ever do adopt NI keys (e.g. user reports show `thinking`-mode switches eating context in real workflows), use the auth-scoped variant above so we don't lose isolation.
 
 ---
 
@@ -180,13 +228,12 @@ If we want a `CHANGELOG.md` we should write our own from our own commit history.
 
 | Change | Verdict | Why |
 |---|---|---|
-| **1. NI cache keys** | **Take, with `auth_hash` included** | Solves the real "switching model nukes context" UX problem. The fork's version drops the auth hash, which leaks reasoning across tenants on a shared proxy. Adding `auth_hash` keeps isolation. |
+| **1. NI cache keys** | **Likely skip** | PR #28 already solves the common cases (Pro↔Flash family normalization, Agent↔Plan portable keys, recovery-boundary handling). NI keys would only help rare switches (`thinking`, `reasoning_effort`, `base_url`); marginal benefit, real complexity, and the fork's version leaks reasoning across tenants. |
 | **2. 409 strategy guard** | **Take** | One-line correctness fix; current code 409s in `recover` mode in edge cases despite the user's explicit opt-in. |
 | **3. Non-DeepSeek passthrough** | **Don't take** | The auth model is wrong (forwards DeepSeek key to OpenAI → 401). Better fix: return a clear 400 instead of silently rewriting. |
 | **4. CHANGELOG** | Optional | Write our own if we want one; theirs is partly out of date relative to our current `main`. |
 
 If you agree with these, the natural next step is one PR off `main` doing:
 
-1. Auth-scoped NI keys (`ni:auth:{h}:signature:{...}` etc.) in `reasoning_store.py` + `transform.py`, with a test that switches `cache_namespace` mid-conversation and verifies reasoning is still found.
-2. The 409 strategy guard (one-line `server.py` change + a `test_protocol.py` test for `recover` mode with a non-recoverable history).
-3. A clean 400 response for non-`deepseek-*` models in `server.py`, replacing today's silent rewrite + warning log.
+1. The 409 strategy guard (one-line `server.py` change + a `test_protocol.py` test for `recover` mode with a non-recoverable history).
+2. A clean 400 response for non-`deepseek-*` models in `server.py`, replacing today's silent rewrite + warning log.
