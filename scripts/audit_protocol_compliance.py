@@ -1,4 +1,4 @@
-"""Standalone audit harness for docs/thinking-mode-tool-call-flow.md.
+"""Standalone audit harness for docs/thinking-tools.md.
 
 This script does not import anything from tests/. It boots a real
 DeepSeekProxyServer in-process, points it at a tiny "fake DeepSeek" upstream
@@ -65,7 +65,7 @@ class StrictFakeDeepSeek(BaseHTTPRequestHandler):
     """Strict reimplementation of DeepSeek's protocol contract.
 
     Rules enforced (as documented in
-    docs/thinking-mode-tool-call-flow.md):
+    docs/thinking-tools.md):
 
     1. If an assistant message in the request requested tool_calls, the same
        message must carry `reasoning_content`. Otherwise HTTP 400 with the
