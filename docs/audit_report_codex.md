@@ -6,7 +6,7 @@ Auditor: Codex
 
 Scope:
 
-- Protocol reference: [`docs/thinking-mode-tool-call-flow.md`](thinking-mode-tool-call-flow.md)
+- Protocol reference: [`docs/thinking-tools.md`](thinking-tools.md)
 - Implementation reviewed: [`src/deepseek_cursor_proxy/transform.py`](../src/deepseek_cursor_proxy/transform.py), [`src/deepseek_cursor_proxy/reasoning_store.py`](../src/deepseek_cursor_proxy/reasoning_store.py), [`src/deepseek_cursor_proxy/streaming.py`](../src/deepseek_cursor_proxy/streaming.py), [`src/deepseek_cursor_proxy/server.py`](../src/deepseek_cursor_proxy/server.py), and related tests.
 - Verification added: [`scripts/audit_deepseek_protocol.py`](../scripts/audit_deepseek_protocol.py)
 

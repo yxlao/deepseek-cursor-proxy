@@ -3,7 +3,7 @@
 **Auditor:** Claude (Opus 4.7)
 **Date:** 2026-05-01
 **Scope:** `src/deepseek_cursor_proxy/` against
-[`docs/thinking-mode-tool-call-flow.md`](thinking-mode-tool-call-flow.md)
+[`docs/thinking-tools.md`](thinking-tools.md)
 **Verdict:** **Compliant.** All seven targeted protocol scenarios pass
 end-to-end against a strict in-process fake DeepSeek upstream that mirrors
 the doc's contract. The existing 93-test suite also passes
@@ -15,7 +15,7 @@ the doc's contract. The existing 93-test suite also passes
 
 I worked top-down from the protocol doc and bottom-up from the source:
 
-1. Read `docs/thinking-mode-tool-call-flow.md` and itemised every claim it
+1. Read `docs/thinking-tools.md` and itemised every claim it
    makes — request shape, response shape, context rules, streaming
    accumulator behaviour, sampling-parameter caveats, recovery
    expectations.
@@ -377,7 +377,7 @@ it uses `:memory:` SQLite stores and ephemeral local servers.
 ## 9. Bottom line
 
 The proxy is faithful to
-[`docs/thinking-mode-tool-call-flow.md`](thinking-mode-tool-call-flow.md).
+[`docs/thinking-tools.md`](thinking-tools.md).
 Every concrete claim in the doc — request shape, output shape, the
 critical "tool-turn assistant messages need reasoning_content in later
 requests" rule, streaming accumulation semantics, pass-through and
