@@ -1,3 +1,31 @@
+# Manully Reviewd To Fix
+
+1. Recovery-notice text mismatch:  let's deprecate or remove the old way of handling. Now, we want a very simple fix for this. Just do the new notice mechanism. Completely remove the old code. Old notice mechanism. That's it. Very simple fix. This should clean up and simplify some code.
+
+2. for issue 2 "Issue 2 — thinking="pass-through" ignores DeepSeek's default-enabled behaviour",  I think we should default that we enable thinking with deepseek. So because of cursor, you cannot actually change whether you enable thinking mode or non-thinking mode in cursor. This is not possible to configure. So by default, we should just hardcode or enable thinking in our proxy regardless of what parameters that cursor gives us. And make it a flag and a config field that allows the user to overwrite. But by default, we should enable thinking for sure. And also when you fix it, keep this implementation very simple and minimalistic.
+
+3. "Issue 3 — Recovery notices are replayed upstream as assistant content",  , yes, we should fix this and make it, make the most simple fix, make the entire code workflow, you know, rethink about the logic and make this robust and simple.
+
+4. Issue 4:  , I think we don't want to fix this. Same as our previous we just discussed. By default, we enable thinking regardless, right? And we allow user already to configure in our YAML and in a flag terminal override. So that I think we don't fix this, but keep our current behavior.
+
+5. issue 5: won't fix
+
+6. issue 6: fix it, such that  in both streaming mode and non-streaming mode, we follow the same type of protocol. Yeah, so I mean, the reasoning content folding mechanism should be identical in both syncing and non-thinking mode.
+
+7. won't fix
+
+8. just rmeove the mmentioning of 409 in reamde.
+
+9. wont' fix for now.
+
+10.  I prefer a simple fix here just to drop the field and lock a warning that this field is dropped.
+
+11. wont'f ix for now
+
+12. log a warning
+
+---
+
 # DeepSeek Thinking-Mode Protocol Audit
 
 **Auditors:** Claude (Opus 4.7) and Codex
