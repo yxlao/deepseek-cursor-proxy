@@ -329,12 +329,9 @@ class CursorReasoningDisplayAdapterTests(unittest.TestCase):
 
         reasoning_delta = reasoning_chunk["choices"][0]["delta"]
         answer_delta = answer_chunk["choices"][0]["delta"]
-        self.assertEqual(reasoning_delta["reasoning_content"], "Need context.")
-        self.assertEqual(
-            reasoning_delta["content"],
-            "<details>\n<summary>Thinking</summary>\n\nNeed context.",
-        )
-        self.assertEqual(answer_delta["content"], "\n</details>\n\nFinal answer.")
+        self.assertEqual(reasoning_delta["content"], "> 💭 Need context.")
+        self.assertNotIn("reasoning_content", reasoning_delta)
+        self.assertEqual(answer_delta["content"], "\n\nFinal answer.")
 
     def test_can_mirror_reasoning_content_into_legacy_think_content(self) -> None:
         adapter = CursorReasoningDisplayAdapter(collapsible=False)
@@ -361,11 +358,10 @@ class CursorReasoningDisplayAdapterTests(unittest.TestCase):
         adapter.rewrite_chunk(answer_chunk)
 
         self.assertEqual(
-            reasoning_chunk["choices"][0]["delta"]["content"], "<think>\nNeed context."
+            reasoning_chunk["choices"][0]["delta"]["content"], "> 💭 Need context."
         )
         self.assertEqual(
-            answer_chunk["choices"][0]["delta"]["content"],
-            "\n</think>\n\nFinal answer.",
+            answer_chunk["choices"][0]["delta"]["content"], "\n\nFinal answer."
         )
 
     def test_closes_thinking_block_before_tool_calls(self) -> None:
@@ -400,9 +396,8 @@ class CursorReasoningDisplayAdapterTests(unittest.TestCase):
 
         adapter.rewrite_chunk(tool_chunk)
 
-        self.assertEqual(
-            tool_chunk["choices"][0]["delta"]["content"], "\n</details>\n\n"
-        )
+        self.assertEqual(tool_chunk["choices"][0]["delta"]["content"], "\n\n")
+        self.assertIn("tool_calls", tool_chunk["choices"][0]["delta"])
 
     def test_flush_chunk_closes_unfinished_thinking_block_at_done(self) -> None:
         adapter = CursorReasoningDisplayAdapter()
@@ -425,16 +420,41 @@ class CursorReasoningDisplayAdapterTests(unittest.TestCase):
         self.assertIsNotNone(closing_chunk)
         assert closing_chunk is not None
         self.assertEqual(closing_chunk["model"], "deepseek-v4-pro")
-        self.assertEqual(
-            closing_chunk["choices"][0]["delta"]["content"], "\n</details>\n\n"
-        )
+        self.assertEqual(closing_chunk["choices"][0]["delta"]["content"], "\n\n")
         self.assertIsNone(adapter.flush_chunk("deepseek-v4-pro"))
+
+    def test_streams_reasoning_as_blockquote_then_separates_content(self) -> None:
+        adapter = CursorReasoningDisplayAdapter()
+        expected_contents = ["> 💭 Let", ">  me", ">  think"]
+        for i, fragment in enumerate(("Let", " me", " think")):
+            chunk = {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": fragment},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+            adapter.rewrite_chunk(chunk)
+            self.assertEqual(chunk["choices"][0]["delta"]["content"], expected_contents[i])
+
+        answer = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "Answer."},
+                    "finish_reason": None,
+                }
+            ]
+        }
+        adapter.rewrite_chunk(answer)
+        self.assertEqual(answer["choices"][0]["delta"]["content"], "\n\nAnswer.")
 
 
 class FoldReasoningTests(unittest.TestCase):
     def test_fold_reasoning_into_non_streaming_content(self) -> None:
-        """Non-streaming responses mirror reasoning_content into a visible
-        <details> block, matching the streaming layout."""
+        """Non-streaming responses mirror reasoning_content into blockquotes."""
         payload = {
             "choices": [
                 {
@@ -450,7 +470,26 @@ class FoldReasoningTests(unittest.TestCase):
         fold_reasoning_into_content(payload, collapsible=True)
         self.assertEqual(
             payload["choices"][0]["message"]["content"],
-            "<details>\n<summary>Thinking</summary>\n\nthinking\n</details>\n\nanswer",
+            "> 💭 thinking\n\nanswer",
+        )
+
+    def test_fold_reasoning_multiline_uses_continue_prefix(self) -> None:
+        payload = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "answer",
+                        "reasoning_content": "line1\nline2",
+                    },
+                }
+            ]
+        }
+        fold_reasoning_into_content(payload, collapsible=True)
+        self.assertEqual(
+            payload["choices"][0]["message"]["content"],
+            "> 💭 line1\n> line2\n\nanswer",
         )
 
     def test_fold_reasoning_skips_empty_reasoning(self) -> None:

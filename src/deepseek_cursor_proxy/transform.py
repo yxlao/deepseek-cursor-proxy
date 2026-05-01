@@ -95,6 +95,8 @@ CURSOR_THINKING_BLOCK_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+CURSOR_BLOCKQUOTE_THINKING_PREFIX_RE = re.compile(r"\A(?:>[^\n]*\n)+\n*")
+
 RECOVERY_NOTICE_TEXT = "[deepseek-cursor-proxy] Refreshed reasoning_content history."
 RECOVERY_NOTICE_CONTENT = f"{RECOVERY_NOTICE_TEXT}\n\n"
 RECOVERY_SYSTEM_CONTENT = (
@@ -160,7 +162,9 @@ def extract_text_content(content: Any) -> str | None:
 
 
 def strip_cursor_thinking_blocks(content: str) -> str:
-    return CURSOR_THINKING_BLOCK_RE.sub("", content).lstrip("\r\n")
+    content = CURSOR_THINKING_BLOCK_RE.sub("", content)
+    content = CURSOR_BLOCKQUOTE_THINKING_PREFIX_RE.sub("", content)
+    return content.lstrip("\r\n")
 
 
 def normalize_tool_call(tool_call: Any) -> dict[str, Any]:
