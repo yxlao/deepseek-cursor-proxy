@@ -625,8 +625,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         accumulator = StreamAccumulator()
         usage: dict[str, Any] | None = None
         display_adapter = (
-            CursorReasoningDisplayAdapter(self.config.cursor_collapsible_reasoning)
-            if self.config.cursor_display_reasoning
+            CursorReasoningDisplayAdapter(self.config.collapsible_reasoning)
+            if self.config.display_reasoning
             else None
         )
         scope = (
@@ -1203,9 +1203,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.trace_dir is not None:
         updates["trace_dir"] = args.trace_dir
     if args.display_reasoning is not None:
-        updates["cursor_display_reasoning"] = args.display_reasoning
+        updates["display_reasoning"] = args.display_reasoning
     if args.collapsible_reasoning is not None:
-        updates["cursor_collapsible_reasoning"] = args.collapsible_reasoning
+        updates["collapsible_reasoning"] = args.collapsible_reasoning
     if args.cors is not None:
         updates["cors"] = args.cors
     if args.request_timeout is not None:
@@ -1255,12 +1255,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     LOG.info(
         (
-            "thinking=%s reasoning_effort=%s cursor_display_reasoning=%s "
-            "missing_reasoning_strategy=%s reasoning_content_path=%s"
+            "thinking=%s reasoning_effort=%s display_reasoning=%s "
+            "collapsible_reasoning=%s missing_reasoning_strategy=%s "
+            "reasoning_content_path=%s"
         ),
         config.thinking,
         config.reasoning_effort,
-        config.cursor_display_reasoning,
+        config.display_reasoning,
+        config.collapsible_reasoning,
         config.missing_reasoning_strategy,
         config.reasoning_content_path,
     )

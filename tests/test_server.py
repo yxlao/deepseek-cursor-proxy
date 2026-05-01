@@ -214,8 +214,8 @@ class ServerTests(unittest.TestCase):
         wfile = BytesIO()
         handler = make_proxy_handler(wfile)
         handler.server.config = ProxyConfig(
-            cursor_display_reasoning=False,
-            cursor_collapsible_reasoning=True,
+            display_reasoning=False,
+            collapsible_reasoning=True,
         )
         chunk = {
             "id": "chatcmpl-stream",
