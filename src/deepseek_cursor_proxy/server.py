@@ -1316,37 +1316,8 @@ def main(argv: list[str] | None = None) -> int:
     server.reasoning_store = store
     server.trace_writer = trace_writer
 
-    LOG.info("listening on http://%s:%s/v1", config.host, config.port)
-    LOG.info(
-        "forwarding to %s/chat/completions default_model=%s",
-        config.upstream_base_url,
-        config.upstream_model,
-    )
-    LOG.info(
-        (
-            "thinking=%s reasoning_effort=%s display_reasoning=%s "
-            "collapsible_reasoning=%s missing_reasoning_strategy=%s "
-            "reasoning_content_path=%s"
-        ),
-        config.thinking,
-        config.reasoning_effort,
-        config.display_reasoning,
-        config.collapsible_reasoning,
-        config.missing_reasoning_strategy,
-        config.reasoning_content_path,
-    )
-    if config.verbose:
-        LOG.info("logging mode=verbose metadata=detailed bodies=true")
-        LOG.warning(
-            "verbose logging enabled; prompts and code may be written to stdout"
-        )
-    else:
-        LOG.info("logging mode=normal metadata=safe_summaries bodies=false")
-    if trace_writer is not None:
-        LOG.info("trace session directory: %s", trace_writer.session_dir)
-        LOG.warning("trace logging enabled; prompts and code will be written to disk")
-
     tunnel: NgrokTunnel | None = None
+    public_url: str | None = None
     if config.ngrok:
         target_url = local_tunnel_target(config.host, config.port)
         tunnel = NgrokTunnel(target_url)
@@ -1357,8 +1328,39 @@ def main(argv: list[str] | None = None) -> int:
             server.server_close()
             store.close()
             return 2
-        LOG.info("ngrok tunnel forwarding %s -> %s", public_url, target_url)
-        LOG.info("api base url: %s/v1", public_url.rstrip("/"))
+    local_base_url = f"http://{config.host}:{config.port}/v1"
+    api_base_url = (
+        f"{public_url.rstrip('/')}/v1" if public_url is not None else local_base_url
+    )
+
+    LOG.info(
+        "default_model: %s (%s, %s)",
+        config.upstream_model,
+        "thinking" if config.thinking == "enabled" else "no thinking",
+        config.reasoning_effort,
+    )
+
+    if config.verbose:
+        display_reasoning = "off"
+        if config.display_reasoning:
+            display_reasoning = (
+                "on (collapsible)" if config.collapsible_reasoning else "on"
+            )
+        LOG.info("display_reasoning: %s", display_reasoning)
+        LOG.info("missing_reasoning_strategy: %s", config.missing_reasoning_strategy)
+        LOG.info("reasoning_cache: %s", config.reasoning_content_path)
+        LOG.warning(
+            "verbose logging enabled; prompts and code may be written to stdout"
+        )
+    if trace_writer is not None:
+        LOG.info("trace_dir: %s", trace_writer.session_dir)
+        LOG.warning("trace logging enabled; prompts and code will be written to disk")
+    if public_url is None and not config.ngrok:
+        LOG.info("public_tunnel: off")
+    if config.verbose:
+        LOG.info("upstream_url: %s/chat/completions", config.upstream_base_url)
+    LOG.info("local_base_url: %s", local_base_url)
+    LOG.info("api_base_url: %s", api_base_url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
