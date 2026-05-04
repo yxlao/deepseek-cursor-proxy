@@ -35,6 +35,7 @@ from deepseek_cursor_proxy.server import (
     DeepSeekProxyHandler,
     DeepSeekProxyServer,
     build_arg_parser,
+    log_context_summary,
     read_response_body,
     summarize_chat_payload,
 )
@@ -233,6 +234,43 @@ class CliAndHelperTests(unittest.TestCase):
         self.assertIn("model='deepseek-v4-pro'", summary)
         self.assertIn("messages=1", summary)
         self.assertNotIn("secret prompt", summary)
+
+    def test_context_summary_keeps_default_ok_path_compact(self) -> None:
+        prepared = SimpleNamespace(
+            patched_reasoning_messages=53,
+            missing_reasoning_messages=0,
+            recovered_reasoning_messages=0,
+            recovery_dropped_messages=0,
+        )
+
+        with self.assertLogs("deepseek_cursor_proxy", level="INFO") as captured:
+            log_context_summary(prepared)
+
+        self.assertEqual(
+            captured.output,
+            ["INFO:deepseek_cursor_proxy:├ context status=ok reasoning=53"],
+        )
+
+    def test_context_summary_expands_abnormal_path(self) -> None:
+        prepared = SimpleNamespace(
+            patched_reasoning_messages=53,
+            missing_reasoning_messages=0,
+            recovered_reasoning_messages=1,
+            recovery_dropped_messages=2,
+        )
+
+        with self.assertLogs("deepseek_cursor_proxy", level="INFO") as captured:
+            log_context_summary(prepared)
+
+        self.assertEqual(
+            captured.output,
+            [
+                (
+                    "INFO:deepseek_cursor_proxy:"
+                    "├ context status=recovered missing=0 recovered=1 dropped=2"
+                )
+            ],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -553,9 +591,11 @@ class HttpBoundaryTests(unittest.TestCase):
         output = "\n".join(captured.output)
         self.assertEqual(status, 200)
         # Single-line stage records keep the log readable.
-        for marker in ("┌ cursor", "├ context", "├ send", "└ stats"):
+        for marker in ("┌ request", "├ context", "└ stats"):
             self.assertIn(marker, output)
-        self.assertNotIn("hi", output.split("┌ cursor")[1].split("\n")[0])
+        self.assertNotIn(" tools=", output)
+        self.assertNotIn("├ send", output)
+        self.assertNotIn("hi", output.split("┌ request")[1].split("\n")[0])
         self.assertNotIn("sk-from-cursor", output)
 
     def test_verbose_logging_includes_bodies_but_redacts_api_key(self) -> None:

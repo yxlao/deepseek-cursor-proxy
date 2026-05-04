@@ -237,7 +237,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             headers=upstream_headers,
         )
 
-        log_send_summary(prepared)
+        if self.config.verbose:
+            log_send_summary(prepared)
         spinner = TerminalSpinner(
             enabled=bool(prepared.payload.get("stream")) and not self.config.verbose,
             text="└ {frame}",
@@ -1011,22 +1012,27 @@ def log_cursor_request(
 ) -> None:
     model = str(payload.get("model") or config.upstream_model)
     LOG.info(
-        "┌ cursor  model=%s effort=%s messages=%s tools=%s",
+        "┌ request model=%s effort=%s messages=%s",
         model,
         config.reasoning_effort,
         format_count(message_count(payload)),
-        format_count(tool_count(payload)),
     )
 
 
 def log_context_summary(prepared: Any) -> None:
+    status = context_status(prepared)
+    if status == "ok":
+        LOG.info(
+            "├ context status=ok reasoning=%s",
+            format_count(prepared.patched_reasoning_messages),
+        )
+        return
     LOG.info(
-        "├ context filled=%s missing=%s recovered=%s dropped=%s status=%s",
-        format_count(prepared.patched_reasoning_messages),
+        "├ context status=%s missing=%s recovered=%s dropped=%s",
+        status,
         format_count(prepared.missing_reasoning_messages),
         format_count(prepared.recovered_reasoning_messages),
         format_count(prepared.recovery_dropped_messages),
-        context_status(prepared),
     )
 
 
