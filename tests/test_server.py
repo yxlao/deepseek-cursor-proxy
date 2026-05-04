@@ -35,7 +35,6 @@ from deepseek_cursor_proxy.server import (
     DeepSeekProxyHandler,
     DeepSeekProxyServer,
     build_arg_parser,
-    log_context_summary,
     read_response_body,
     summarize_chat_payload,
 )
@@ -234,43 +233,6 @@ class CliAndHelperTests(unittest.TestCase):
         self.assertIn("model='deepseek-v4-pro'", summary)
         self.assertIn("messages=1", summary)
         self.assertNotIn("secret prompt", summary)
-
-    def test_context_summary_keeps_default_ok_path_compact(self) -> None:
-        prepared = SimpleNamespace(
-            patched_reasoning_messages=53,
-            missing_reasoning_messages=0,
-            recovered_reasoning_messages=0,
-            recovery_dropped_messages=0,
-        )
-
-        with self.assertLogs("deepseek_cursor_proxy", level="INFO") as captured:
-            log_context_summary(prepared)
-
-        self.assertEqual(
-            captured.output,
-            ["INFO:deepseek_cursor_proxy:├ context status=ok reasoning=53"],
-        )
-
-    def test_context_summary_expands_abnormal_path(self) -> None:
-        prepared = SimpleNamespace(
-            patched_reasoning_messages=53,
-            missing_reasoning_messages=0,
-            recovered_reasoning_messages=1,
-            recovery_dropped_messages=2,
-        )
-
-        with self.assertLogs("deepseek_cursor_proxy", level="INFO") as captured:
-            log_context_summary(prepared)
-
-        self.assertEqual(
-            captured.output,
-            [
-                (
-                    "INFO:deepseek_cursor_proxy:"
-                    "├ context status=recovered missing=0 recovered=1 dropped=2"
-                )
-            ],
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -590,9 +552,9 @@ class HttpBoundaryTests(unittest.TestCase):
                 time.sleep(0.01)
         output = "\n".join(captured.output)
         self.assertEqual(status, 200)
-        # Single-line stage records keep the log readable.
-        for marker in ("┌ request", "├ context", "└ stats"):
-            self.assertIn(marker, output)
+        self.assertIn("┌ request model=deepseek-v4-pro effort=max messages=1", output)
+        self.assertIn("├ context status=ok reasoning=0", output)
+        self.assertIn("└ stats", output)
         self.assertNotIn(" tools=", output)
         self.assertNotIn("├ send", output)
         self.assertNotIn("hi", output.split("┌ request")[1].split("\n")[0])
