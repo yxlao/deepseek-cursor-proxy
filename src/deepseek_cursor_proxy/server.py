@@ -5,11 +5,9 @@ from dataclasses import dataclass, replace
 import gzip
 from http.client import HTTPException
 import json
-import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
-import threading
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -22,102 +20,20 @@ from .config import (
     default_config_path,
     default_reasoning_content_path,
 )
+from .logging import (
+    LOG,
+    TerminalSpinner,
+    configure_logging,
+)
 from .reasoning_store import ReasoningStore, conversation_scope
 from .streaming import CursorReasoningDisplayAdapter, StreamAccumulator
 from .trace import TraceRequest, TraceWriter
 from .tunnel import NgrokTunnel, local_tunnel_target
 from .transform import (
-    PreparedRequest,
     RECOVERY_NOTICE_CONTENT,
     prepare_upstream_request,
     rewrite_response_body,
 )
-
-
-LOG = logging.getLogger("deepseek_cursor_proxy")
-
-DEFAULT_INFO_LOG_FORMAT = "%(message)s"
-DEFAULT_WARNING_LOG_FORMAT = "%(levelname)s %(message)s"
-VERBOSE_LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
-
-
-class ConsoleLogFormatter(logging.Formatter):
-    def __init__(self, *, verbose: bool) -> None:
-        super().__init__()
-        self.verbose = verbose
-        self._verbose_formatter = logging.Formatter(VERBOSE_LOG_FORMAT)
-        self._info_formatter = logging.Formatter(DEFAULT_INFO_LOG_FORMAT)
-        self._warning_formatter = logging.Formatter(DEFAULT_WARNING_LOG_FORMAT)
-
-    def format(self, record: logging.LogRecord) -> str:
-        if self.verbose:
-            return self._verbose_formatter.format(record)
-        if record.levelno <= logging.INFO:
-            return self._info_formatter.format(record)
-        return self._warning_formatter.format(record)
-
-
-def configure_logging(*, verbose: bool) -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(ConsoleLogFormatter(verbose=verbose))
-    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
-
-
-class TerminalSpinner:
-    hide_cursor = "\x1b[?25l"
-    show_cursor = "\x1b[?25h"
-    frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-
-    def __init__(
-        self,
-        *,
-        enabled: bool,
-        text: str,
-        stream: Any | None = None,
-        interval: float = 0.12,
-    ) -> None:
-        self.stream = stream if stream is not None else sys.stderr
-        self.enabled = enabled and bool(getattr(self.stream, "isatty", lambda: False)())
-        self.text = text
-        self.interval = interval
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._visible = False
-
-    def start(self) -> "TerminalSpinner":
-        if not self.enabled or self._thread is not None:
-            return self
-        self.stream.write(self.hide_cursor)
-        self.stream.flush()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return self
-
-    def stop(self) -> None:
-        if not self.enabled:
-            return
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1)
-            self._thread = None
-        if self._visible:
-            self.stream.write("\r" + (" " * self._clear_width()) + "\r")
-            self.stream.flush()
-            self._visible = False
-        self.stream.write(self.show_cursor)
-        self.stream.flush()
-
-    def _run(self) -> None:
-        index = 0
-        while not self._stop.is_set():
-            self.stream.write("\r" + self.text.format(frame=self.frames[index]))
-            self.stream.flush()
-            self._visible = True
-            index = (index + 1) % len(self.frames)
-            self._stop.wait(self.interval)
-
-    def _clear_width(self) -> int:
-        return max(len(self.text.format(frame=frame)) for frame in self.frames)
 
 
 class RequestBodyTooLarge(ValueError):
@@ -1103,7 +1019,7 @@ def log_cursor_request(
     )
 
 
-def log_context_summary(prepared: PreparedRequest) -> None:
+def log_context_summary(prepared: Any) -> None:
     LOG.info(
         "├ context filled=%s missing=%s recovered=%s dropped=%s status=%s",
         format_count(prepared.patched_reasoning_messages),
@@ -1114,7 +1030,7 @@ def log_context_summary(prepared: PreparedRequest) -> None:
     )
 
 
-def log_send_summary(prepared: PreparedRequest) -> None:
+def log_send_summary(prepared: Any) -> None:
     LOG.info(
         "├ send    user_msgs=%s messages=%s tools=%s reasoning_content=%s",
         format_count(user_message_count(prepared.payload)),
@@ -1134,7 +1050,7 @@ def log_stats_summary(usage: dict[str, Any] | None) -> None:
     )
 
 
-def context_status(prepared: PreparedRequest) -> str:
+def context_status(prepared: Any) -> str:
     if prepared.recovered_reasoning_messages:
         return "recovered"
     if prepared.missing_reasoning_messages:
@@ -1433,7 +1349,6 @@ def main(argv: list[str] | None = None) -> int:
         LOG.info("upstream_url: %s/chat/completions", config.upstream_base_url)
     LOG.info("local_base_url: %s", local_base_url)
     LOG.info("api_base_url: %s", api_base_url)
-    LOG.info("■ ready")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

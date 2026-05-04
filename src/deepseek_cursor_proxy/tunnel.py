@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import logging
 import shutil
 import subprocess
 import time
@@ -10,8 +9,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
-
-LOG = logging.getLogger("deepseek_cursor_proxy")
+from .logging import LOG
 
 
 DEFAULT_NGROK_API_URL = "http://127.0.0.1:4040/api"

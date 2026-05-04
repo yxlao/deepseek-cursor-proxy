@@ -26,12 +26,14 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from deepseek_cursor_proxy.config import ProxyConfig
+from deepseek_cursor_proxy.logging import (
+    ConsoleLogFormatter,
+    TerminalSpinner,
+)
 from deepseek_cursor_proxy.reasoning_store import ReasoningStore
 from deepseek_cursor_proxy.server import (
-    ConsoleLogFormatter,
     DeepSeekProxyHandler,
     DeepSeekProxyServer,
-    TerminalSpinner,
     build_arg_parser,
     read_response_body,
     summarize_chat_payload,

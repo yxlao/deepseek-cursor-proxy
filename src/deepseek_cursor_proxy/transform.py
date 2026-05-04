@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
-import logging
 import re
 from typing import Any
 
 from .config import ProxyConfig
+from .logging import LOG
 from .reasoning_store import (
     ReasoningStore,
     conversation_scope,
@@ -18,9 +18,6 @@ from .reasoning_store import (
     turn_context_signature,
 )
 from .streaming import fold_reasoning_into_content
-
-
-LOG = logging.getLogger("deepseek_cursor_proxy")
 
 
 SUPPORTED_REQUEST_FIELDS = {
