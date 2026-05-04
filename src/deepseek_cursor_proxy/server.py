@@ -861,7 +861,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reasoning-effort",
         choices=["low", "medium", "high", "max", "xhigh"],
-        help="DeepSeek reasoning effort, default from config or high",
+        help="DeepSeek reasoning effort, default from config or max",
     )
     parser.add_argument(
         "--reasoning-content-path",
@@ -997,8 +997,9 @@ def log_cursor_request(
 ) -> None:
     model = str(payload.get("model") or config.upstream_model)
     LOG.info(
-        "┌ cursor  model=%s messages=%s tools=%s",
+        "┌ cursor  model=%s effort=%s messages=%s tools=%s",
         model,
+        config.reasoning_effort,
         format_count(message_count(payload)),
         format_count(tool_count(payload)),
     )
@@ -1332,7 +1333,7 @@ def main(argv: list[str] | None = None) -> int:
             store.close()
             return 2
         LOG.info("ngrok tunnel forwarding %s -> %s", public_url, target_url)
-        LOG.info("Cursor Base URL: %s/v1", public_url.rstrip("/"))
+        LOG.info("api base url: %s/v1", public_url.rstrip("/"))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -795,7 +795,7 @@ def prepare_upstream_request(
     thinking_disabled = config.thinking == "disabled"
     if thinking_enabled:
         prepared["reasoning_effort"] = normalize_reasoning_effort(
-            prepared.get("reasoning_effort") or config.reasoning_effort
+            config.reasoning_effort
         )
 
     cache_namespace = reasoning_cache_namespace(

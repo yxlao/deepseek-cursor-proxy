@@ -35,7 +35,7 @@ def _default_cache_namespace() -> str:
         ProxyConfig(),
         "deepseek-v4-pro",
         {"type": "enabled"},
-        "high",
+        "max",
     )
 
 
@@ -366,14 +366,14 @@ class CrossModeAndModelTests(unittest.TestCase):
             config,
             "deepseek-v4-pro",
             {"type": "enabled"},
-            "high",
+            "max",
             "Bearer key-a",
         )
         namespace_flash = reasoning_cache_namespace(
             config,
             "deepseek-v4-flash",
             {"type": "enabled"},
-            "high",
+            "max",
             "Bearer key-a",
         )
         self.assertEqual(namespace_pro, namespace_flash)
