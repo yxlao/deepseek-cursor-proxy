@@ -63,27 +63,32 @@ def configure_logging(*, verbose: bool) -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 
 
-class StatsSpinner:
-    frames = ("⠋", "⠙", "⠹")
-    text = "└ stats   {frame} streaming..."
+class TerminalSpinner:
+    hide_cursor = "\x1b[?25l"
+    show_cursor = "\x1b[?25h"
+    frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
     def __init__(
         self,
         *,
         enabled: bool,
+        text: str,
         stream: Any | None = None,
         interval: float = 0.12,
     ) -> None:
         self.stream = stream if stream is not None else sys.stderr
         self.enabled = enabled and bool(getattr(self.stream, "isatty", lambda: False)())
+        self.text = text
         self.interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._visible = False
 
-    def start(self) -> "StatsSpinner":
+    def start(self) -> "TerminalSpinner":
         if not self.enabled or self._thread is not None:
             return self
+        self.stream.write(self.hide_cursor)
+        self.stream.flush()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
@@ -96,11 +101,11 @@ class StatsSpinner:
             self._thread.join(timeout=1)
             self._thread = None
         if self._visible:
-            self.stream.write(
-                "\r" + (" " * len(self.text.format(frame=self.frames[0]))) + "\r"
-            )
+            self.stream.write("\r" + (" " * self._clear_width()) + "\r")
             self.stream.flush()
             self._visible = False
+        self.stream.write(self.show_cursor)
+        self.stream.flush()
 
     def _run(self) -> None:
         index = 0
@@ -110,6 +115,9 @@ class StatsSpinner:
             self._visible = True
             index = (index + 1) % len(self.frames)
             self._stop.wait(self.interval)
+
+    def _clear_width(self) -> int:
+        return max(len(self.text.format(frame=frame)) for frame in self.frames)
 
 
 class RequestBodyTooLarge(ValueError):
@@ -314,8 +322,9 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         )
 
         log_send_summary(prepared)
-        stats_spinner = StatsSpinner(
-            enabled=bool(prepared.payload.get("stream")) and not self.config.verbose
+        spinner = TerminalSpinner(
+            enabled=bool(prepared.payload.get("stream")) and not self.config.verbose,
+            text="└ {frame}",
         ).start()
 
         try:
@@ -323,7 +332,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 LOG.info("forwarding to %s", upstream_url)
             response = urlopen(request, timeout=self.config.request_timeout)
         except HTTPError as exc:
-            stats_spinner.stop()
+            spinner.stop()
             LOG.warning(
                 "request failed upstream_status=%s stream=%s elapsed_ms=%s",
                 exc.code,
@@ -339,7 +348,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             )
             return
         except URLError as exc:
-            stats_spinner.stop()
+            spinner.stop()
             LOG.warning(
                 "upstream request failed elapsed_ms=%s reason=%s",
                 elapsed_ms(started),
@@ -353,7 +362,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             self._finish_trace(trace, "upstream_error", http_status=502)
             return
         except Exception:
-            stats_spinner.stop()
+            spinner.stop()
             raise
 
         try:
@@ -391,7 +400,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                         record_response_contexts=prepared.record_response_contexts,
                     )
                 if not sent_response.sent:
-                    stats_spinner.stop()
+                    spinner.stop()
                     self._finish_trace(
                         trace,
                         "client_disconnected",
@@ -399,7 +408,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                         stream=bool(prepared.payload.get("stream")),
                     )
                     return
-                stats_spinner.stop()
+                spinner.stop()
                 log_stats_summary(sent_response.usage)
                 self._finish_trace(
                     trace,
@@ -408,7 +417,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     stream=bool(prepared.payload.get("stream")),
                 )
         finally:
-            stats_spinner.stop()
+            spinner.stop()
 
     def _start_trace(self, request_path: str) -> TraceRequest | None:
         writer = self.trace_writer
@@ -1424,6 +1433,7 @@ def main(argv: list[str] | None = None) -> int:
         LOG.info("upstream_url: %s/chat/completions", config.upstream_base_url)
     LOG.info("local_base_url: %s", local_base_url)
     LOG.info("api_base_url: %s", api_base_url)
+    LOG.info("■ ready")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

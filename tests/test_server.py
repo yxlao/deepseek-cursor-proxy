@@ -31,7 +31,7 @@ from deepseek_cursor_proxy.server import (
     ConsoleLogFormatter,
     DeepSeekProxyHandler,
     DeepSeekProxyServer,
-    StatsSpinner,
+    TerminalSpinner,
     build_arg_parser,
     read_response_body,
     summarize_chat_payload,
@@ -186,20 +186,26 @@ class CliAndHelperTests(unittest.TestCase):
             ),
         )
 
-    def test_stats_spinner_animates_only_for_tty(self) -> None:
+    def test_terminal_spinner_animates_only_for_tty(self) -> None:
         tty = _FakeConsole(tty=True)
-        spinner = StatsSpinner(enabled=True, stream=tty, interval=0.001).start()
+        spinner = TerminalSpinner(
+            enabled=True, text="└ {frame}", stream=tty, interval=0.001
+        ).start()
         deadline = time.monotonic() + 0.2
         while time.monotonic() < deadline and not tty.writes:
             time.sleep(0.001)
         spinner.stop()
 
         output = "".join(tty.writes)
-        self.assertIn("└ stats   ⠋ streaming...", output)
-        self.assertTrue(output.endswith("\r"))
+        self.assertIn(TerminalSpinner.hide_cursor, output)
+        self.assertIn("└ ⠋", output)
+        self.assertIn(TerminalSpinner.show_cursor, output)
+        self.assertTrue(output.endswith(TerminalSpinner.show_cursor))
 
         non_tty = _FakeConsole(tty=False)
-        StatsSpinner(enabled=True, stream=non_tty, interval=0.001).start().stop()
+        TerminalSpinner(
+            enabled=True, text="└ {frame}", stream=non_tty, interval=0.001
+        ).start().stop()
         self.assertEqual(non_tty.writes, [])
 
     def test_read_response_body_decodes_gzip_and_deflate(self) -> None:
