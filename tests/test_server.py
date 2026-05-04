@@ -31,6 +31,7 @@ from deepseek_cursor_proxy.server import (
     ConsoleLogFormatter,
     DeepSeekProxyHandler,
     DeepSeekProxyServer,
+    StatsSpinner,
     build_arg_parser,
     read_response_body,
     summarize_chat_payload,
@@ -81,6 +82,21 @@ class _BrokenPipeWfile:
 
     def flush(self) -> None:
         raise BrokenPipeError("test disconnect")
+
+
+class _FakeConsole:
+    def __init__(self, *, tty: bool) -> None:
+        self.tty = tty
+        self.writes: list[str] = []
+
+    def isatty(self) -> bool:
+        return self.tty
+
+    def write(self, text: str) -> None:
+        self.writes.append(text)
+
+    def flush(self) -> None:
+        return
 
 
 def _make_handler_stub(wfile: object, **config: object) -> DeepSeekProxyHandler:
@@ -169,6 +185,22 @@ class CliAndHelperTests(unittest.TestCase):
                 r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} INFO listening on "
             ),
         )
+
+    def test_stats_spinner_animates_only_for_tty(self) -> None:
+        tty = _FakeConsole(tty=True)
+        spinner = StatsSpinner(enabled=True, stream=tty, interval=0.001).start()
+        deadline = time.monotonic() + 0.2
+        while time.monotonic() < deadline and not tty.writes:
+            time.sleep(0.001)
+        spinner.stop()
+
+        output = "".join(tty.writes)
+        self.assertIn("└ stats   ⠋ streaming...", output)
+        self.assertTrue(output.endswith("\r"))
+
+        non_tty = _FakeConsole(tty=False)
+        StatsSpinner(enabled=True, stream=non_tty, interval=0.001).start().stop()
+        self.assertEqual(non_tty.writes, [])
 
     def test_read_response_body_decodes_gzip_and_deflate(self) -> None:
         self.assertEqual(

@@ -9,6 +9,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
+import threading
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -60,6 +61,55 @@ def configure_logging(*, verbose: bool) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(ConsoleLogFormatter(verbose=verbose))
     logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+
+
+class StatsSpinner:
+    frames = ("⠋", "⠙", "⠹")
+    text = "└ stats   {frame} streaming..."
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        stream: Any | None = None,
+        interval: float = 0.12,
+    ) -> None:
+        self.stream = stream if stream is not None else sys.stderr
+        self.enabled = enabled and bool(getattr(self.stream, "isatty", lambda: False)())
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._visible = False
+
+    def start(self) -> "StatsSpinner":
+        if not self.enabled or self._thread is not None:
+            return self
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        if not self.enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+            self._thread = None
+        if self._visible:
+            self.stream.write(
+                "\r" + (" " * len(self.text.format(frame=self.frames[0]))) + "\r"
+            )
+            self.stream.flush()
+            self._visible = False
+
+    def _run(self) -> None:
+        index = 0
+        while not self._stop.is_set():
+            self.stream.write("\r" + self.text.format(frame=self.frames[index]))
+            self.stream.flush()
+            self._visible = True
+            index = (index + 1) % len(self.frames)
+            self._stop.wait(self.interval)
 
 
 class RequestBodyTooLarge(ValueError):
@@ -264,12 +314,16 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         )
 
         log_send_summary(prepared)
+        stats_spinner = StatsSpinner(
+            enabled=bool(prepared.payload.get("stream")) and not self.config.verbose
+        ).start()
 
         try:
             if self.config.verbose:
                 LOG.info("forwarding to %s", upstream_url)
             response = urlopen(request, timeout=self.config.request_timeout)
         except HTTPError as exc:
+            stats_spinner.stop()
             LOG.warning(
                 "request failed upstream_status=%s stream=%s elapsed_ms=%s",
                 exc.code,
@@ -285,6 +339,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             )
             return
         except URLError as exc:
+            stats_spinner.stop()
             LOG.warning(
                 "upstream request failed elapsed_ms=%s reason=%s",
                 elapsed_ms(started),
@@ -297,55 +352,63 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             )
             self._finish_trace(trace, "upstream_error", http_status=502)
             return
+        except Exception:
+            stats_spinner.stop()
+            raise
 
-        with response:
-            upstream_status = getattr(response, "status", 200)
-            if self.config.verbose:
-                LOG.info(
-                    "upstream response status=%s stream=%s elapsed_ms=%s",
-                    upstream_status,
-                    bool(prepared.payload.get("stream")),
-                    elapsed_ms(started),
-                )
-            if prepared.payload.get("stream"):
-                sent_response = self._proxy_streaming_response(
-                    response,
-                    prepared.original_model,
-                    prepared.payload["messages"],
-                    prepared.cache_namespace,
-                    prepared.recovery_notice,
-                    trace=trace,
-                    record_response_scope=prepared.record_response_scope,
-                    record_response_messages=prepared.record_response_messages,
-                    record_response_contexts=prepared.record_response_contexts,
-                )
-            else:
-                sent_response = self._proxy_regular_response(
-                    response,
-                    prepared.original_model,
-                    prepared.payload["messages"],
-                    prepared.cache_namespace,
-                    prepared.recovery_notice,
-                    trace=trace,
-                    record_response_scope=prepared.record_response_scope,
-                    record_response_messages=prepared.record_response_messages,
-                    record_response_contexts=prepared.record_response_contexts,
-                )
-            if not sent_response.sent:
+        try:
+            with response:
+                upstream_status = getattr(response, "status", 200)
+                if self.config.verbose:
+                    LOG.info(
+                        "upstream response status=%s stream=%s elapsed_ms=%s",
+                        upstream_status,
+                        bool(prepared.payload.get("stream")),
+                        elapsed_ms(started),
+                    )
+                if prepared.payload.get("stream"):
+                    sent_response = self._proxy_streaming_response(
+                        response,
+                        prepared.original_model,
+                        prepared.payload["messages"],
+                        prepared.cache_namespace,
+                        prepared.recovery_notice,
+                        trace=trace,
+                        record_response_scope=prepared.record_response_scope,
+                        record_response_messages=prepared.record_response_messages,
+                        record_response_contexts=prepared.record_response_contexts,
+                    )
+                else:
+                    sent_response = self._proxy_regular_response(
+                        response,
+                        prepared.original_model,
+                        prepared.payload["messages"],
+                        prepared.cache_namespace,
+                        prepared.recovery_notice,
+                        trace=trace,
+                        record_response_scope=prepared.record_response_scope,
+                        record_response_messages=prepared.record_response_messages,
+                        record_response_contexts=prepared.record_response_contexts,
+                    )
+                if not sent_response.sent:
+                    stats_spinner.stop()
+                    self._finish_trace(
+                        trace,
+                        "client_disconnected",
+                        http_status=upstream_status,
+                        stream=bool(prepared.payload.get("stream")),
+                    )
+                    return
+                stats_spinner.stop()
+                log_stats_summary(sent_response.usage)
                 self._finish_trace(
                     trace,
-                    "client_disconnected",
+                    "completed",
                     http_status=upstream_status,
                     stream=bool(prepared.payload.get("stream")),
                 )
-                return
-            log_stats_summary(sent_response.usage)
-            self._finish_trace(
-                trace,
-                "completed",
-                http_status=upstream_status,
-                stream=bool(prepared.payload.get("stream")),
-            )
+        finally:
+            stats_spinner.stop()
 
     def _start_trace(self, request_path: str) -> TraceRequest | None:
         writer = self.trace_writer
