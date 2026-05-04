@@ -14,7 +14,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import gzip
 import json
+import logging
 from pathlib import Path
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -26,6 +28,7 @@ from urllib.request import Request, urlopen
 from deepseek_cursor_proxy.config import ProxyConfig
 from deepseek_cursor_proxy.reasoning_store import ReasoningStore
 from deepseek_cursor_proxy.server import (
+    ConsoleLogFormatter,
     DeepSeekProxyHandler,
     DeepSeekProxyServer,
     build_arg_parser,
@@ -118,6 +121,54 @@ class CliAndHelperTests(unittest.TestCase):
         self.assertFalse(args.collapsible_reasoning)
         self.assertTrue(args.cors)
         self.assertEqual(args.trace_dir, Path("/tmp/dcp-traces"))
+
+    def test_default_console_logging_hides_info_prefix_and_timestamp(self) -> None:
+        formatter = ConsoleLogFormatter(verbose=False)
+        info_record = logging.LogRecord(
+            "deepseek_cursor_proxy",
+            logging.INFO,
+            __file__,
+            1,
+            "listening on %s",
+            ("http://127.0.0.1:9000/v1",),
+            None,
+        )
+        warning_record = logging.LogRecord(
+            "deepseek_cursor_proxy",
+            logging.WARNING,
+            __file__,
+            1,
+            "trace logging enabled",
+            (),
+            None,
+        )
+
+        self.assertEqual(
+            formatter.format(info_record),
+            "listening on http://127.0.0.1:9000/v1",
+        )
+        self.assertEqual(
+            formatter.format(warning_record), "WARNING trace logging enabled"
+        )
+
+    def test_verbose_console_logging_shows_timestamp_and_level(self) -> None:
+        formatter = ConsoleLogFormatter(verbose=True)
+        record = logging.LogRecord(
+            "deepseek_cursor_proxy",
+            logging.INFO,
+            __file__,
+            1,
+            "listening on %s",
+            ("http://127.0.0.1:9000/v1",),
+            None,
+        )
+
+        self.assertRegex(
+            formatter.format(record),
+            re.compile(
+                r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} INFO listening on "
+            ),
+        )
 
     def test_read_response_body_decodes_gzip_and_deflate(self) -> None:
         self.assertEqual(

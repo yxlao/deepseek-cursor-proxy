@@ -35,6 +35,32 @@ from .transform import (
 
 LOG = logging.getLogger("deepseek_cursor_proxy")
 
+DEFAULT_INFO_LOG_FORMAT = "%(message)s"
+DEFAULT_WARNING_LOG_FORMAT = "%(levelname)s %(message)s"
+VERBOSE_LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+
+
+class ConsoleLogFormatter(logging.Formatter):
+    def __init__(self, *, verbose: bool) -> None:
+        super().__init__()
+        self.verbose = verbose
+        self._verbose_formatter = logging.Formatter(VERBOSE_LOG_FORMAT)
+        self._info_formatter = logging.Formatter(DEFAULT_INFO_LOG_FORMAT)
+        self._warning_formatter = logging.Formatter(DEFAULT_WARNING_LOG_FORMAT)
+
+    def format(self, record: logging.LogRecord) -> str:
+        if self.verbose:
+            return self._verbose_formatter.format(record)
+        if record.levelno <= logging.INFO:
+            return self._info_formatter.format(record)
+        return self._warning_formatter.format(record)
+
+
+def configure_logging(*, verbose: bool) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(ConsoleLogFormatter(verbose=verbose))
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+
 
 class RequestBodyTooLarge(ValueError):
     pass
@@ -1216,13 +1242,11 @@ def warn_if_insecure_upstream(url: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
     args = build_arg_parser().parse_args(argv)
     try:
         config = ProxyConfig.from_file(config_path=args.config_path)
     except ValueError as exc:
+        configure_logging(verbose=bool(args.verbose))
         LOG.error("%s", exc)
         return 2
     updates: dict[str, Any] = {}
@@ -1267,6 +1291,7 @@ def main(argv: list[str] | None = None) -> int:
     if updates:
         config = replace(config, **updates)
 
+    configure_logging(verbose=config.verbose)
     warn_if_insecure_upstream(config.upstream_base_url)
     store = ReasoningStore(
         config.reasoning_content_path,
