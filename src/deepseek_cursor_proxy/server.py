@@ -1023,7 +1023,7 @@ def log_context_summary(prepared: Any) -> None:
     status = context_status(prepared)
     if status == "ok":
         LOG.info(
-            "├ context status=ok reasoning=%s",
+            "├ context status=ok reasoning_context=%s",
             format_count(prepared.patched_reasoning_messages),
         )
         return
