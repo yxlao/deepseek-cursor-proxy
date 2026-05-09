@@ -119,6 +119,13 @@ def as_str(value: Any, default: str) -> str:
     return str(value)
 
 
+def as_optional_str(value: Any) -> str | None:
+    if value is MISSING or value is None:
+        return None
+    stripped = str(value).strip()
+    return stripped if stripped else None
+
+
 def as_bool(value: Any, default: bool) -> bool:
     if value is MISSING or value is None:
         return default
@@ -203,6 +210,7 @@ class ProxyConfig:
     cors: bool = DEFAULT_CORS
     verbose: bool = DEFAULT_VERBOSE
     ngrok: bool = DEFAULT_NGROK
+    ngrok_url: str | None = None
     trace_dir: Path | None = None
 
     @classmethod
@@ -283,4 +291,5 @@ class ProxyConfig:
                 setting_value(settings, "ngrok"),
                 DEFAULT_NGROK,
             ),
+            ngrok_url=as_optional_str(setting_value(settings, "ngrok_url")),
         )

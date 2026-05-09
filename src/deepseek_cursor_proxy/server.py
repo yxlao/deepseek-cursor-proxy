@@ -893,6 +893,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Start an ngrok tunnel and print the Cursor base URL",
     )
     parser.add_argument(
+        "--ngrok-url",
+        metavar="URL",
+        help=(
+            "Pass --url=URL to ngrok (reserved endpoint / custom domain); "
+            "see `ngrok http --help`"
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1260,6 +1268,9 @@ def main(argv: list[str] | None = None) -> int:
         updates["reasoning_content_path"] = args.reasoning_content_path
     if args.ngrok is not None:
         updates["ngrok"] = args.ngrok
+    if args.ngrok_url is not None:
+        stripped = str(args.ngrok_url).strip()
+        updates["ngrok_url"] = stripped if stripped else None
     if args.verbose is not None:
         updates["verbose"] = args.verbose
     if args.trace_dir is not None:
@@ -1314,7 +1325,7 @@ def main(argv: list[str] | None = None) -> int:
     public_url: str | None = None
     if config.ngrok:
         target_url = local_tunnel_target(config.host, config.port)
-        tunnel = NgrokTunnel(target_url)
+        tunnel = NgrokTunnel(target_url, ngrok_url=config.ngrok_url)
         try:
             public_url = tunnel.start()
         except RuntimeError as exc:

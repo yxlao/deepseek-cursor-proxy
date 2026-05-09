@@ -57,6 +57,7 @@ def ngrok_agent_urls(api_url: str) -> list[str]:
 @dataclass
 class NgrokTunnel:
     target_url: str
+    ngrok_url: str | None = None
     command: str = "ngrok"
     api_url: str = DEFAULT_NGROK_API_URL
     startup_timeout: float = 15.0
@@ -70,8 +71,12 @@ class NgrokTunnel:
                 "`ngrok config add-authtoken <token>` once."
             )
 
+        argv = [self.command, "http", self.target_url]
+        if self.ngrok_url:
+            argv.append(f"--url={self.ngrok_url}")
+
         self.process = subprocess.Popen(
-            [self.command, "http", self.target_url],
+            argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

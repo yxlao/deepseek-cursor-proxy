@@ -140,6 +140,12 @@ class CliAndHelperTests(unittest.TestCase):
         self.assertTrue(args.cors)
         self.assertEqual(args.trace_dir, Path("/tmp/dcp-traces"))
 
+    def test_cli_accepts_ngrok_url(self) -> None:
+        args = build_arg_parser().parse_args(
+            ["--ngrok-url", "https://example.ngrok.app"]
+        )
+        self.assertEqual(args.ngrok_url, "https://example.ngrok.app")
+
     def test_default_console_logging_hides_info_prefix_and_timestamp(self) -> None:
         formatter = ConsoleLogFormatter(verbose=False)
         info_record = logging.LogRecord(

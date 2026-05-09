@@ -40,6 +40,7 @@ class ConfigTests(unittest.TestCase):
                 home / ".deepseek-cursor-proxy" / "reasoning_content.sqlite3",
             )
             self.assertEqual(ProxyConfig().ngrok, DEFAULT_NGROK)
+            self.assertIsNone(ProxyConfig().ngrok_url)
             self.assertEqual(
                 ProxyConfig().collapsible_reasoning,
                 DEFAULT_COLLAPSIBLE_REASONING,
@@ -136,6 +137,7 @@ class ConfigTests(unittest.TestCase):
                         "missing_reasoning_strategy: reject",
                         "reasoning_cache_max_age_seconds: 60",
                         "reasoning_cache_max_rows: 50",
+                        "ngrok_url: https://example.ngrok.dev",
                     ]
                 ),
                 encoding="utf-8",
@@ -160,6 +162,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.missing_reasoning_strategy, "reject")
         self.assertEqual(config.reasoning_cache_max_age_seconds, 60)
         self.assertEqual(config.reasoning_cache_max_rows, 50)
+        self.assertEqual(config.ngrok_url, "https://example.ngrok.dev")
 
     def test_invalid_config_values_fall_back_to_defaults(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -190,6 +193,13 @@ class ConfigTests(unittest.TestCase):
             config.collapsible_reasoning,
             DEFAULT_COLLAPSIBLE_REASONING,
         )
+
+    def test_ngrok_url_empty_or_whitespace_is_none(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text('ngrok_url: "   "\n', encoding="utf-8")
+            config = ProxyConfig.from_file(config_path=config_path)
+        self.assertIsNone(config.ngrok_url)
 
     def test_relative_reasoning_content_path_in_config_is_relative_to_config_file(
         self,

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock, patch
 
 from deepseek_cursor_proxy.tunnel import (
+    NgrokTunnel,
     local_tunnel_target,
     ngrok_agent_urls,
     parse_ngrok_public_url,
@@ -48,6 +50,32 @@ class TunnelTests(unittest.TestCase):
                 "http://127.0.0.1:4040/api/tunnels",
             ],
         )
+
+    def test_ngrok_tunnel_appends_url_flag_when_configured(self) -> None:
+        with patch("deepseek_cursor_proxy.tunnel.shutil.which", return_value="/x/ngrok"):
+            with patch("deepseek_cursor_proxy.tunnel.subprocess.Popen") as popen:
+                popen.return_value = MagicMock(poll=lambda: None)
+                with patch.object(
+                    NgrokTunnel,
+                    "wait_for_public_url",
+                    return_value="https://example.ngrok-free.app",
+                ):
+                    tunnel = NgrokTunnel(
+                        "http://127.0.0.1:9000",
+                        ngrok_url="https://my.ngrok.dev",
+                    )
+                    tunnel.start()
+                popen.assert_called_once()
+                argv, _kwargs = popen.call_args
+                self.assertEqual(
+                    argv[0],
+                    [
+                        "ngrok",
+                        "http",
+                        "http://127.0.0.1:9000",
+                        "--url=https://my.ngrok.dev",
+                    ],
+                )
 
 
 if __name__ == "__main__":
