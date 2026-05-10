@@ -82,7 +82,7 @@ deepseek-cursor-proxy
 
 When ngrok is enabled, `deepseek-cursor-proxy` will print the ngrok public URL on start. If it differs from the one in Cursor, update it in Cursor's Base URL field.
 
-If you use a **reserved ngrok endpoint or your own domain** (instead of a random URL each time), pass it through to the ngrok agent as `--url=…`. Set `ngrok_url` in `~/.deepseek-cursor-proxy/config.yaml` or use `--ngrok-url` on the command line (see `ngrok http --help`). Example:
+If you use a **reserved ngrok endpoint or your own domain** (instead of a URL assigned by ngrok), pass it through to the ngrok agent as `--url=…`. Set `ngrok_url` in `~/.deepseek-cursor-proxy/config.yaml` or use `--ngrok-url` on the command line (see `ngrok http --help`). Example:
 
 ```yaml
 ngrok: true
