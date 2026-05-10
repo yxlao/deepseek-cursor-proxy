@@ -52,7 +52,9 @@ class TunnelTests(unittest.TestCase):
         )
 
     def test_ngrok_tunnel_appends_url_flag_when_configured(self) -> None:
-        with patch("deepseek_cursor_proxy.tunnel.shutil.which", return_value="/x/ngrok"):
+        with patch(
+            "deepseek_cursor_proxy.tunnel.shutil.which", return_value="/x/ngrok"
+        ):
             with patch("deepseek_cursor_proxy.tunnel.subprocess.Popen") as popen:
                 popen.return_value = MagicMock(poll=lambda: None)
                 with patch.object(
