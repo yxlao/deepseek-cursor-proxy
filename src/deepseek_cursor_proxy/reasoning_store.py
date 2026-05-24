@@ -292,7 +292,7 @@ class ReasoningStore:
         else:
             # Read connections each get their own cache, but mmap_size (below)
             # means most reads never touch this cache at all.
-            conn.execute("PRAGMA cache_size = -65536")   # 64 MiB per thread
+            conn.execute("PRAGMA cache_size = -65536")  # 64 MiB per thread
         # Memory-map the database file directly into the process address space.
         # With mmap enabled the OS page cache becomes the working set — all
         # connections share the same physical pages, reads are zero-copy, and
@@ -300,7 +300,7 @@ class ReasoningStore:
         # 32 GiB ceiling covers the ~27 GB theoretical max at 5M rows;
         # SQLite only maps pages that actually exist, so unused address space
         # costs nothing.
-        conn.execute("PRAGMA mmap_size = 34359738368")   # 32 GiB ceiling
+        conn.execute("PRAGMA mmap_size = 34359738368")  # 32 GiB ceiling
         return conn
 
     def _read_conn(self) -> sqlite3.Connection:
@@ -376,8 +376,7 @@ class ReasoningStore:
             # over capacity, so prune on every write until we're safely
             # back under the limit.
             at_or_over_limit = (
-                self.max_rows is not None
-                and self._write_count > self.max_rows
+                self.max_rows is not None and self._write_count > self.max_rows
             )
             skip_rowcount = (
                 not at_or_over_limit
@@ -394,15 +393,23 @@ class ReasoningStore:
         # :memory: DB: falls back to the write connection (see _read_conn).
         if self._in_memory:
             with self._write_lock:
-                row = self._read_conn().execute(
+                row = (
+                    self._read_conn()
+                    .execute(
+                        "SELECT reasoning FROM reasoning_cache WHERE key = ?",
+                        (key,),
+                    )
+                    .fetchone()
+                )
+        else:
+            row = (
+                self._read_conn()
+                .execute(
                     "SELECT reasoning FROM reasoning_cache WHERE key = ?",
                     (key,),
-                ).fetchone()
-        else:
-            row = self._read_conn().execute(
-                "SELECT reasoning FROM reasoning_cache WHERE key = ?",
-                (key,),
-            ).fetchone()
+                )
+                .fetchone()
+            )
         if row is None:
             return None
         return str(row[0])
