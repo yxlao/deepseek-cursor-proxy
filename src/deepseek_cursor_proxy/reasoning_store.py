@@ -285,12 +285,21 @@ class ReasoningStore:
         # avoids the extra fsync that FULL mode adds on every commit.
         conn.execute("PRAGMA synchronous = NORMAL")
         if writer:
-            # Give the single write connection a large page cache so hot rows
-            # stay in RAM during high-concurrency bursts from parallel subagents.
-            conn.execute("PRAGMA cache_size = -32768")  # 32 MiB
+            # Large page cache for the write connection.  The negative value
+            # is in kibibytes; 524288 = 512 MiB, enough to hold the entire
+            # 300 MB database in Python heap and absorb large write bursts.
+            conn.execute("PRAGMA cache_size = -524288")  # 512 MiB
         else:
-            # Read connections share a smaller per-thread cache.
-            conn.execute("PRAGMA cache_size = -8192")   # 8 MiB per thread
+            # Read connections each get their own cache, but mmap_size (below)
+            # means most reads never touch this cache at all.
+            conn.execute("PRAGMA cache_size = -65536")   # 64 MiB per thread
+        # Memory-map the database file directly into the process address space.
+        # With mmap enabled the OS page cache becomes the working set — all
+        # connections share the same physical pages, reads are zero-copy, and
+        # the entire 300 MB DB can stay warm in RAM indefinitely as long as
+        # there is free memory.  2 GiB ceiling is far above the current DB
+        # size; SQLite only maps what actually exists.
+        conn.execute("PRAGMA mmap_size = 2147483648")    # 2 GiB ceiling
         return conn
 
     def _read_conn(self) -> sqlite3.Connection:
