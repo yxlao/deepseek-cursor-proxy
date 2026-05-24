@@ -1257,6 +1257,28 @@ def warn_if_insecure_upstream(url: str) -> None:
     LOG.warning("upstream base_url uses plain HTTP; bearer tokens may be exposed")
 
 
+_LOG_TRIM_LINES = 5_000  # keep this many most-recent lines on startup
+
+
+def _trim_log_file(log_path: Path, max_lines: int = _LOG_TRIM_LINES) -> None:
+    """Trim *log_path* to at most *max_lines* most-recent lines, in-place.
+
+    Called once at startup so the log file never grows without bound across
+    long-running sessions.  Silently skips if the file is missing, too small
+    to need trimming, or cannot be read/written (e.g. permission error).
+    """
+    try:
+        if not log_path.exists():
+            return
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines(keepends=True)
+        if len(lines) <= max_lines:
+            return
+        log_path.write_text("".join(lines[-max_lines:]), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _proxy_already_running(host: str, port: int) -> bool:
     """Return True if a healthy proxy is already listening at host:port.
 
@@ -1333,6 +1355,11 @@ def main(argv: list[str] | None = None) -> int:
         config = replace(config, **updates)
 
     configure_logging(verbose=config.verbose)
+    # Trim the default log file so it never grows without bound.  The proxy
+    # is started via `nohup ... >> autostart.log 2>&1`, so we know exactly
+    # where logs are going.  We trim *before* emitting any new lines so the
+    # file stays bounded even across many restart cycles.
+    _trim_log_file(Path.home() / ".deepseek-cursor-proxy" / "autostart.log")
     warn_if_insecure_upstream(config.upstream_base_url)
     store = ReasoningStore(
         config.reasoning_content_path,

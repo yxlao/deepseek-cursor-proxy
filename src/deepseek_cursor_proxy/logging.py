@@ -8,25 +8,22 @@ from typing import Any
 
 LOG = stdlib_logging.getLogger("deepseek_cursor_proxy")
 
-DEFAULT_INFO_LOG_FORMAT = "%(message)s"
-DEFAULT_WARNING_LOG_FORMAT = "%(levelname)s %(message)s"
-VERBOSE_LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+# All log lines include a timestamp regardless of verbose mode.  The verbose
+# flag controls whether full request/response payloads are printed, not
+# whether basic observability (when did this happen?) is available.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+LOG_FORMAT_VERBOSE = "%(asctime)s %(levelname)s [%(threadName)s] %(message)s"
 
 
 class ConsoleLogFormatter(stdlib_logging.Formatter):
     def __init__(self, *, verbose: bool) -> None:
         super().__init__()
         self.verbose = verbose
-        self._verbose_formatter = stdlib_logging.Formatter(VERBOSE_LOG_FORMAT)
-        self._info_formatter = stdlib_logging.Formatter(DEFAULT_INFO_LOG_FORMAT)
-        self._warning_formatter = stdlib_logging.Formatter(DEFAULT_WARNING_LOG_FORMAT)
+        fmt = LOG_FORMAT_VERBOSE if verbose else LOG_FORMAT
+        self._formatter = stdlib_logging.Formatter(fmt)
 
     def format(self, record: stdlib_logging.LogRecord) -> str:
-        if self.verbose:
-            return self._verbose_formatter.format(record)
-        if record.levelno <= stdlib_logging.INFO:
-            return self._info_formatter.format(record)
-        return self._warning_formatter.format(record)
+        return self._formatter.format(record)
 
 
 def configure_logging(*, verbose: bool) -> None:

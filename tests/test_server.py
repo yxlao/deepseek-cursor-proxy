@@ -167,12 +167,18 @@ class CliAndHelperTests(unittest.TestCase):
             None,
         )
 
-        self.assertEqual(
+        # All log lines now include a timestamp regardless of level or verbosity.
+        self.assertRegex(
             formatter.format(info_record),
-            "listening on http://127.0.0.1:9000/v1",
+            re.compile(
+                r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} INFO listening on "
+            ),
         )
-        self.assertEqual(
-            formatter.format(warning_record), "WARNING trace logging enabled"
+        self.assertRegex(
+            formatter.format(warning_record),
+            re.compile(
+                r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} WARNING trace logging"
+            ),
         )
 
     def test_verbose_console_logging_shows_timestamp_and_level(self) -> None:
@@ -187,10 +193,11 @@ class CliAndHelperTests(unittest.TestCase):
             None,
         )
 
+        # Verbose mode includes thread name between level and message.
         self.assertRegex(
             formatter.format(record),
             re.compile(
-                r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} INFO listening on "
+                r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} INFO \[.*\] listening on "
             ),
         )
 
