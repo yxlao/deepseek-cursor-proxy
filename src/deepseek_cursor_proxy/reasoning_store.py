@@ -244,6 +244,7 @@ class ReasoningStore:
                 if attempt < _STARTUP_PRUNE_BUSY_RETRIES - 1:
                     time.sleep(_STARTUP_PRUNE_BUSY_WAIT)
         import logging as _logging
+
         _logging.getLogger("deepseek_cursor_proxy").warning(
             "reasoning store: skipped startup prune (database is locked)"
         )

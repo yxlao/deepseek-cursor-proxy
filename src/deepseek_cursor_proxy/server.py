@@ -52,7 +52,6 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     trace_writer: TraceWriter | None
 
 
-
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
     server_version = "DeepSeekPythonProxy/0.1"
 
@@ -750,8 +749,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                         "model streaming assistant messages", accumulator.messages()
                     )
                 messages_with_reasoning = [
-                    m for m in accumulator.messages()
-                    if m.get("reasoning_content")
+                    m for m in accumulator.messages() if m.get("reasoning_content")
                 ]
                 if not client_disconnected or messages_with_reasoning:
                     stored = sum(
