@@ -296,10 +296,11 @@ class ReasoningStore:
         # Memory-map the database file directly into the process address space.
         # With mmap enabled the OS page cache becomes the working set — all
         # connections share the same physical pages, reads are zero-copy, and
-        # the entire 300 MB DB can stay warm in RAM indefinitely as long as
-        # there is free memory.  2 GiB ceiling is far above the current DB
-        # size; SQLite only maps what actually exists.
-        conn.execute("PRAGMA mmap_size = 2147483648")    # 2 GiB ceiling
+        # the entire DB can stay warm in RAM indefinitely on a 128 GB machine.
+        # 32 GiB ceiling covers the ~27 GB theoretical max at 5M rows;
+        # SQLite only maps pages that actually exist, so unused address space
+        # costs nothing.
+        conn.execute("PRAGMA mmap_size = 34359738368")   # 32 GiB ceiling
         return conn
 
     def _read_conn(self) -> sqlite3.Connection:
