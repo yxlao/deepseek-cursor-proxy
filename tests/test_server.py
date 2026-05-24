@@ -264,7 +264,7 @@ class HandlerStubTests(unittest.TestCase):
             }
         ).encode("utf-8")
         try:
-            with self.assertLogs("deepseek_cursor_proxy", level="WARNING") as captured:
+            with self.assertLogs("deepseek_cursor_proxy", level="INFO") as captured:
                 result = handler._proxy_regular_response(
                     _FakeResponse(body),
                     "deepseek-v4-pro",
@@ -290,7 +290,7 @@ class HandlerStubTests(unittest.TestCase):
             ]
         )
         try:
-            with self.assertLogs("deepseek_cursor_proxy", level="WARNING") as captured:
+            with self.assertLogs("deepseek_cursor_proxy", level="INFO") as captured:
                 result = handler._proxy_streaming_response(
                     response,
                     "deepseek-v4-pro",

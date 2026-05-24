@@ -7,6 +7,7 @@ from http.client import HTTPException
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import socket
 import sys
 import time
 from typing import Any
@@ -50,6 +51,19 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     config: ProxyConfig
     reasoning_store: ReasoningStore
     trace_writer: TraceWriter | None
+
+    def server_bind(self) -> None:
+        # SO_REUSEADDR is already set by HTTPServer.allow_reuse_address=True, but
+        # SO_REUSEPORT (Linux/BSD) lets a freshly-started proxy bind immediately even
+        # while a dying predecessor still holds the socket in CLOSE_WAIT, which is the
+        # most common cause of the "Address already in use" cascade after a crash.
+        try:
+            self.socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_REUSEPORT, 1  # type: ignore[attr-defined]
+            )
+        except AttributeError:
+            pass  # Windows / older BSD — graceful degradation
+        super().server_bind()
 
 
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
@@ -426,7 +440,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 self.send_header(name, value)
             self.end_headers()
         except (BrokenPipeError, ConnectionError) as exc:
-            LOG.warning("client disconnected while %s: %s", disconnect_context, exc)
+            # Cursor subagents are short-lived; mid-stream disconnects are normal.
+            LOG.info("client disconnected while %s: %s", disconnect_context, exc)
             return False
         return True
 
@@ -442,7 +457,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             if flush:
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionError) as exc:
-            LOG.warning("client disconnected while %s: %s", disconnect_context, exc)
+            # Cursor subagents are short-lived; mid-stream disconnects are normal.
+            LOG.info("client disconnected while %s: %s", disconnect_context, exc)
             return False
         return True
 
@@ -693,6 +709,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             else [(scope, response_prior_messages)]
         )
         finalized = False
+        client_disconnected = False
         pending_recovery_notice = recovery_notice
         try:
             while True:
@@ -725,33 +742,45 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 if not self._write_to_client(
                     rewritten, "sending streaming response chunk", flush=True
                 ):
+                    # Client disconnected (expected for short-lived subagents).
+                    # Stop draining the upstream socket immediately — there is no
+                    # point in reading more DeepSeek tokens that nobody will receive.
+                    client_disconnected = True
                     return ProxyResponseResult(False, usage)
                 if finalized:
                     break
         finally:
-            # Store partial reasoning whenever the stream exits without
-            # the upstream's [DONE] terminator (client disconnect, upstream
-            # read failure, exception). Without this, a Stop pressed mid-stream
+            # Store partial reasoning whenever the stream exits without the
+            # upstream's [DONE] terminator (client disconnect, upstream read
+            # failure, exception). Without this, a Stop pressed mid-stream
             # would discard any reasoning the proxy received but never cached.
+            # Skip the store when the client disconnected early AND the
+            # accumulator has nothing worth caching (no reasoning content yet)
+            # to avoid touching the DB unnecessarily on subagent churn.
             if not finalized:
                 if self.config.verbose:
                     log_json(
                         "model streaming assistant messages", accumulator.messages()
                     )
-                stored = sum(
-                    accumulator.store_reasoning(
-                        self.reasoning_store,
-                        ctx_scope,
-                        cache_namespace,
-                        prior_messages,
+                messages_with_reasoning = [
+                    m for m in accumulator.messages()
+                    if m.get("reasoning_content")
+                ]
+                if not client_disconnected or messages_with_reasoning:
+                    stored = sum(
+                        accumulator.store_reasoning(
+                            self.reasoning_store,
+                            ctx_scope,
+                            cache_namespace,
+                            prior_messages,
+                        )
+                        for ctx_scope, prior_messages in response_contexts
                     )
-                    for ctx_scope, prior_messages in response_contexts
-                )
-                if self.config.verbose and stored:
-                    LOG.info(
-                        "stored %s streaming reasoning cache key(s) before exit",
-                        stored,
-                    )
+                    if self.config.verbose and stored:
+                        LOG.info(
+                            "stored %s streaming reasoning cache key(s) before exit",
+                            stored,
+                        )
         return ProxyResponseResult(True, usage)
 
     def _rewrite_sse_line(

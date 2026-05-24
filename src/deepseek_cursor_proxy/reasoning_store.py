@@ -177,6 +177,10 @@ def portable_reasoning_keys(
     return keys
 
 
+_STARTUP_PRUNE_BUSY_RETRIES = 3
+_STARTUP_PRUNE_BUSY_WAIT = 0.5  # seconds between retries
+
+
 class ReasoningStore:
     def __init__(
         self,
@@ -197,6 +201,15 @@ class ReasoningStore:
         self._conn = sqlite3.connect(
             self.reasoning_content_path, check_same_thread=False
         )
+        # busy_timeout lets SQLite wait up to 5 s for a concurrent writer to
+        # finish instead of immediately raising OperationalError("database is
+        # locked"). This prevents crash-restart races when multiple proxy
+        # instances start at nearly the same time (e.g. several terminals open
+        # in quick succession or after a subagent-triggered crash).
+        self._conn.execute("PRAGMA busy_timeout = 5000")
+        # WAL mode allows one writer and multiple concurrent readers without
+        # locking, which is far better for the threading model of this proxy.
+        self._conn.execute("PRAGMA journal_mode = WAL")
         if isinstance(self.reasoning_content_path, Path):
             self.reasoning_content_path.chmod(0o600)
         self._conn.execute(
@@ -210,7 +223,30 @@ class ReasoningStore:
             """
         )
         self._conn.commit()
-        self.prune()
+        self._startup_prune()
+
+    def _startup_prune(self) -> None:
+        """Prune on startup with retry + graceful degradation.
+
+        Another proxy instance starting simultaneously can hold a write lock
+        for a short window.  busy_timeout handles most of this, but if the
+        lock persists longer than busy_timeout we catch the error and skip
+        the prune rather than crashing — stale rows left behind are harmless
+        and will be cleaned up on the next successful prune.
+        """
+        for attempt in range(_STARTUP_PRUNE_BUSY_RETRIES):
+            try:
+                self.prune()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower():
+                    raise
+                if attempt < _STARTUP_PRUNE_BUSY_RETRIES - 1:
+                    time.sleep(_STARTUP_PRUNE_BUSY_WAIT)
+        import logging as _logging
+        _logging.getLogger("deepseek_cursor_proxy").warning(
+            "reasoning store: skipped startup prune (database is locked)"
+        )
 
     def close(self) -> None:
         with self._lock:
