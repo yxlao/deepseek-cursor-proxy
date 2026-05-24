@@ -1257,6 +1257,28 @@ def warn_if_insecure_upstream(url: str) -> None:
     LOG.warning("upstream base_url uses plain HTTP; bearer tokens may be exposed")
 
 
+def _proxy_already_running(host: str, port: int) -> bool:
+    """Return True if a healthy proxy is already listening at host:port.
+
+    Called before we attempt to bind the server socket.  When Cursor spawns
+    multiple agent / subagent processes simultaneously, each one may trigger
+    the shell autostart hook.  Rather than crashing with 'Address already in
+    use', a new startup attempt that finds the proxy healthy should just exit
+    cleanly — the existing process handles requests just fine.
+    """
+    try:
+        import urllib.request as _urlreq
+
+        req = _urlreq.Request(
+            f"http://{host}:{port}/healthz",
+            headers={"User-Agent": "deepseek-cursor-proxy/startup-check"},
+        )
+        with _urlreq.urlopen(req, timeout=2.0) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     try:
@@ -1330,6 +1352,19 @@ def main(argv: list[str] | None = None) -> int:
             LOG.error("failed to initialize trace directory: %s", exc)
             store.close()
             return 2
+    if _proxy_already_running(config.host, config.port):
+        # Another proxy instance is already healthy on this address.  This can
+        # happen when the shell autostart hook fires in multiple Cursor agent
+        # terminals in quick succession.  Exit cleanly so the running instance
+        # keeps serving requests undisturbed.
+        LOG.info(
+            "proxy already running at %s:%s — exiting cleanly",
+            config.host,
+            config.port,
+        )
+        store.close()
+        return 0
+
     server = DeepSeekProxyServer((config.host, config.port), DeepSeekProxyHandler)
     server.config = config
     server.reasoning_store = store

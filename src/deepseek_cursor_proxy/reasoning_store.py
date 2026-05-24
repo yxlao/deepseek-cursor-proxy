@@ -180,8 +180,39 @@ def portable_reasoning_keys(
 _STARTUP_PRUNE_BUSY_RETRIES = 3
 _STARTUP_PRUNE_BUSY_WAIT = 0.5  # seconds between retries
 
+# Prune the max-rows limit at most once every N writes.  Running the full-table
+# DELETE on every write was the primary cause of multi-second lock contention
+# under concurrent subagent load.  Age-based pruning is cheap (index range
+# scan) and still happens on every write; row-count pruning is expensive
+# (table scan) and only needs to run occasionally.
+_ROWCOUNT_PRUNE_INTERVAL = 50
+
 
 class ReasoningStore:
+    """Thread-safe reasoning_content cache backed by SQLite.
+
+    Concurrency model
+    -----------------
+    The proxy runs as a ThreadingHTTPServer: each request is handled on its
+    own thread.  To allow concurrent reads without blocking on writes we use
+    two connection layers:
+
+    * **Write connection** (``self._write_conn``) — one shared connection,
+      serialised by ``self._write_lock`` (a plain ``threading.Lock``).  All
+      INSERT/UPDATE/DELETE/COMMIT operations go through this path.
+
+    * **Thread-local read connections** (``self._local.conn``) — each handler
+      thread opens its own SQLite connection the first time it calls ``get()``.
+      In WAL mode SQLite guarantees that readers never block writers and
+      writers never block readers at the *file* level; the Python-level
+      per-thread connections ensure there is no intra-process contention
+      either.
+
+    The special case ``":memory:"`` (used in tests) cannot have multiple
+    connections pointing at the same data, so it falls back to the write
+    connection for reads (still serialised by ``_write_lock``).
+    """
+
     def __init__(
         self,
         reasoning_content_path: str | Path,
@@ -190,29 +221,19 @@ class ReasoningStore:
     ) -> None:
         self.max_age_seconds = max_age_seconds
         self.max_rows = max_rows
-        if str(reasoning_content_path) == ":memory:":
+        self._in_memory = str(reasoning_content_path) == ":memory:"
+        if self._in_memory:
             self.reasoning_content_path: str | Path = ":memory:"
         else:
             self.reasoning_content_path = Path(reasoning_content_path).expanduser()
             self.reasoning_content_path.parent.mkdir(
                 mode=0o700, parents=True, exist_ok=True
             )
-        self._lock = threading.RLock()
-        self._conn = sqlite3.connect(
-            self.reasoning_content_path, check_same_thread=False
-        )
-        # busy_timeout lets SQLite wait up to 5 s for a concurrent writer to
-        # finish instead of immediately raising OperationalError("database is
-        # locked"). This prevents crash-restart races when multiple proxy
-        # instances start at nearly the same time (e.g. several terminals open
-        # in quick succession or after a subagent-triggered crash).
-        self._conn.execute("PRAGMA busy_timeout = 5000")
-        # WAL mode allows one writer and multiple concurrent readers without
-        # locking, which is far better for the threading model of this proxy.
-        self._conn.execute("PRAGMA journal_mode = WAL")
+        self._write_lock = threading.Lock()
+        self._write_conn = self._open_conn(writer=True)
         if isinstance(self.reasoning_content_path, Path):
             self.reasoning_content_path.chmod(0o600)
-        self._conn.execute(
+        self._write_conn.execute(
             """
             CREATE TABLE IF NOT EXISTS reasoning_cache (
                 key TEXT PRIMARY KEY,
@@ -222,8 +243,71 @@ class ReasoningStore:
             )
             """
         )
-        self._conn.commit()
+        # Index on created_at powers both the age-based DELETE (range scan) and
+        # the max-rows DELETE (top-N scan), turning O(N log N) full-table sorts
+        # into O(log N) index seeks.  CREATE INDEX IF NOT EXISTS is a no-op on
+        # databases that already have the index, so it is safe to run every
+        # startup and will transparently add the index to existing DBs.
+        self._write_conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reasoning_cache_created_at
+            ON reasoning_cache(created_at)
+            """
+        )
+        self._write_conn.commit()
+        if not self._in_memory:
+            self._local: threading.local = threading.local()
+        # Seed the write counter with the current row count so the rowcount
+        # prune triggers correctly: once _write_count exceeds max_rows we know
+        # the DB could be over capacity and prune on every write; below that
+        # threshold we only prune every _ROWCOUNT_PRUNE_INTERVAL writes.
+        row = self._write_conn.execute(
+            "SELECT COUNT(*) FROM reasoning_cache"
+        ).fetchone()
+        self._write_count: int = int(row[0]) if row else 0
         self._startup_prune()
+
+    # ------------------------------------------------------------------
+    # Connection helpers
+    # ------------------------------------------------------------------
+
+    def _open_conn(self, *, writer: bool = False) -> sqlite3.Connection:
+        """Open a new SQLite connection with appropriate PRAGMAs."""
+        conn = sqlite3.connect(
+            str(self.reasoning_content_path), check_same_thread=False
+        )
+        # busy_timeout: wait up to 5 s for a concurrent writer instead of
+        # immediately raising OperationalError("database is locked").
+        conn.execute("PRAGMA busy_timeout = 5000")
+        # WAL mode: readers never block writers; writers never block readers.
+        conn.execute("PRAGMA journal_mode = WAL")
+        # NORMAL durability is safe under WAL (no data loss on OS crash) and
+        # avoids the extra fsync that FULL mode adds on every commit.
+        conn.execute("PRAGMA synchronous = NORMAL")
+        if writer:
+            # Give the single write connection a large page cache so hot rows
+            # stay in RAM during high-concurrency bursts from parallel subagents.
+            conn.execute("PRAGMA cache_size = -32768")  # 32 MiB
+        else:
+            # Read connections share a smaller per-thread cache.
+            conn.execute("PRAGMA cache_size = -8192")   # 8 MiB per thread
+        return conn
+
+    def _read_conn(self) -> sqlite3.Connection:
+        """Return the thread-local read connection, creating it if needed."""
+        if self._in_memory:
+            # All connections to :memory: are independent DBs; share the write
+            # connection (serialised by _write_lock in the caller).
+            return self._write_conn
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._open_conn(writer=False)
+            self._local.conn = conn
+        return conn
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def _startup_prune(self) -> None:
         """Prune on startup with retry + graceful degradation.
@@ -250,15 +334,21 @@ class ReasoningStore:
         )
 
     def close(self) -> None:
-        with self._lock:
-            self._conn.close()
+        with self._write_lock:
+            self._write_conn.close()
+        # Thread-local read connections are closed when their threads exit or
+        # when the process terminates; the OS reclaims file handles either way.
+
+    # ------------------------------------------------------------------
+    # Core read / write
+    # ------------------------------------------------------------------
 
     def put(self, key: str, reasoning: str, message: dict[str, Any]) -> None:
         if not isinstance(reasoning, str):
             return
         message_json = json.dumps(message, ensure_ascii=False, sort_keys=True)
-        with self._lock:
-            self._conn.execute(
+        with self._write_lock:
+            self._write_conn.execute(
                 """
                 INSERT INTO reasoning_cache(key, reasoning, message_json, created_at)
                 VALUES (?, ?, ?, ?)
@@ -269,12 +359,37 @@ class ReasoningStore:
                 """,
                 (key, reasoning, message_json, time.time()),
             )
-            self._prune_locked()
-            self._conn.commit()
+            self._write_count += 1
+            # Skip the expensive rowcount prune when we're well under
+            # capacity, running it at most every _ROWCOUNT_PRUNE_INTERVAL
+            # writes.  Once _write_count exceeds max_rows the DB could be
+            # over capacity, so prune on every write until we're safely
+            # back under the limit.
+            at_or_over_limit = (
+                self.max_rows is not None
+                and self._write_count > self.max_rows
+            )
+            skip_rowcount = (
+                not at_or_over_limit
+                and self._write_count % _ROWCOUNT_PRUNE_INTERVAL != 0
+            )
+            deleted = self._prune_write_locked(skip_rowcount=skip_rowcount)
+            self._write_count -= deleted
+            self._write_conn.commit()
 
     def get(self, key: str) -> str | None:
-        with self._lock:
-            row = self._conn.execute(
+        # File-based DB: no lock needed — WAL allows concurrent reads even
+        # while the write connection is mid-transaction.  Each thread has its
+        # own connection so there is no intra-process sharing either.
+        # :memory: DB: falls back to the write connection (see _read_conn).
+        if self._in_memory:
+            with self._write_lock:
+                row = self._read_conn().execute(
+                    "SELECT reasoning FROM reasoning_cache WHERE key = ?",
+                    (key,),
+                ).fetchone()
+        else:
+            row = self._read_conn().execute(
                 "SELECT reasoning FROM reasoning_cache WHERE key = ?",
                 (key,),
             ).fetchone()
@@ -342,36 +457,44 @@ class ReasoningStore:
         return len(keys)
 
     def clear(self) -> int:
-        with self._lock:
-            row = self._conn.execute("SELECT COUNT(*) FROM reasoning_cache").fetchone()
+        with self._write_lock:
+            row = self._write_conn.execute(
+                "SELECT COUNT(*) FROM reasoning_cache"
+            ).fetchone()
             count = int(row[0] if row else 0)
-            self._conn.execute("DELETE FROM reasoning_cache")
-            self._conn.commit()
+            self._write_conn.execute("DELETE FROM reasoning_cache")
+            self._write_conn.commit()
         return count
 
     def prune(self) -> int:
-        with self._lock:
-            deleted = self._prune_locked()
-            self._conn.commit()
+        with self._write_lock:
+            deleted = self._prune_write_locked()
+            self._write_conn.commit()
         return deleted
 
-    def _prune_locked(self) -> int:
+    def _prune_write_locked(self, *, skip_rowcount: bool = False) -> int:
+        """Run pruning queries.  Must be called with ``_write_lock`` held."""
         deleted = 0
         if self.max_age_seconds is not None and self.max_age_seconds > 0:
             cutoff = time.time() - self.max_age_seconds
-            cursor = self._conn.execute(
+            # idx_reasoning_cache_created_at makes this a fast index range scan.
+            cursor = self._write_conn.execute(
                 "DELETE FROM reasoning_cache WHERE created_at < ?",
                 (cutoff,),
             )
             deleted += cursor.rowcount if cursor.rowcount != -1 else 0
 
-        if self.max_rows is not None and self.max_rows > 0:
-            cursor = self._conn.execute(
+        if not skip_rowcount and self.max_rows is not None and self.max_rows > 0:
+            # Keep the top max_rows rows by created_at; delete everything else.
+            # The subquery walks the created_at index and materialises exactly
+            # max_rows rowids — O(max_rows) index seek.  The outer DELETE is
+            # O(rows deleted).  Using rowid NOT IN handles equal-timestamp ties
+            # correctly (rowid is unique; created_at is not).
+            cursor = self._write_conn.execute(
                 """
                 DELETE FROM reasoning_cache
-                WHERE key NOT IN (
-                    SELECT key
-                    FROM reasoning_cache
+                WHERE rowid NOT IN (
+                    SELECT rowid FROM reasoning_cache
                     ORDER BY created_at DESC
                     LIMIT ?
                 )
