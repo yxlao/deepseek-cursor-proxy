@@ -7,7 +7,6 @@ from http.client import HTTPException
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import socket
 import sys
 import time
 from typing import Any
@@ -52,18 +51,6 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     reasoning_store: ReasoningStore
     trace_writer: TraceWriter | None
 
-    def server_bind(self) -> None:
-        # SO_REUSEADDR is already set by HTTPServer.allow_reuse_address=True, but
-        # SO_REUSEPORT (Linux/BSD) lets a freshly-started proxy bind immediately even
-        # while a dying predecessor still holds the socket in CLOSE_WAIT, which is the
-        # most common cause of the "Address already in use" cascade after a crash.
-        try:
-            self.socket.setsockopt(
-                socket.SOL_SOCKET, socket.SO_REUSEPORT, 1  # type: ignore[attr-defined]
-            )
-        except AttributeError:
-            pass  # Windows / older BSD — graceful degradation
-        super().server_bind()
 
 
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
