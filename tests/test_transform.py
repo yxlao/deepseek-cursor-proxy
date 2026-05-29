@@ -60,9 +60,7 @@ class SurgicalRecoveryTests(unittest.TestCase):
             messages.append(
                 {"role": "tool", "tool_call_id": f"call_{i}", "content": f"r{i}"}
             )
-            messages.append(
-                {"role": "assistant", "content": f"answer {i}"}
-            )
+            messages.append({"role": "assistant", "content": f"answer {i}"})
         return messages
 
     def test_single_miss_in_long_conversation_preserves_bulk_context(self) -> None:
