@@ -543,10 +543,11 @@ class ThinkingDisabledTests(_StrictUpstreamCase):
 
 
 class RecoveryTests(_StrictUpstreamCase):
-    def test_cold_cache_recovers_to_latest_user_with_notice(self) -> None:
-        """Stale tool history with no cached reasoning: proxy keeps only
-        the latest user message + recovery system message and prefixes a
-        user-facing notice into the response."""
+    def test_cold_cache_surgically_removes_unrecoverable_tool_chain(self) -> None:
+        """Stale tool history with no cached reasoning: the proxy surgically
+        removes only the assistant tool-call message and its tool result,
+        preserving all surrounding user/system context and emitting no
+        user-facing recovery notice."""
         status, response = _post(
             f"{self.proxy.url}/v1/chat/completions",
             {
@@ -577,12 +578,13 @@ class RecoveryTests(_StrictUpstreamCase):
         self.assertEqual(status, 200, response)
         sent = StrictFakeDeepSeek.requests[-1]
         self.assertEqual(
-            [m["role"] for m in sent["messages"]], ["system", "system", "user"]
+            [m["role"] for m in sent["messages"]], ["system", "user", "user"]
         )
+        self.assertEqual(sent["messages"][1]["content"], "old work")
         self.assertEqual(
             sent["messages"][-1]["content"], "Thanks. What about Saturday?"
         )
-        self.assertIn(
+        self.assertNotIn(
             "[deepseek-cursor-proxy] Refreshed reasoning",
             response["choices"][0]["message"]["content"],
         )

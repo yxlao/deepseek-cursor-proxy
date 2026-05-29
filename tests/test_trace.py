@@ -314,7 +314,7 @@ class TraceIntegrationTests(unittest.TestCase):
         )
         trace = _read_single_trace(self.writer.session_dir)
         self.assertEqual(
-            trace["transform"]["recovery_steps"][0]["strategy"], "latest_user"
+            trace["transform"]["recovery_steps"][0]["strategy"], "surgical"
         )
         self.assertGreaterEqual(
             len(
