@@ -577,6 +577,19 @@ def recover_messages_from_missing_reasoning(
     messages: list[dict[str, Any]],
     missing_indexes: list[int],
 ) -> tuple[list[dict[str, Any]], int, str | None, dict[str, Any]]:
+    """Surgically remove only the messages with unrecoverable reasoning and their
+    associated tool results, preserving all other conversation context.
+
+    Previous behavior (nuclear): dropped *all* messages except system + last user,
+    causing catastrophic context loss (production: 307 of 309 messages dropped).
+
+    New behavior (surgical): for each assistant message with missing reasoning:
+      - If it had tool_calls, remove it and all subsequent tool result messages
+        (until the next user/system/non-tool assistant message).
+      - If it had no tool_calls but needed reasoning (positioned between tool
+        calls), find the preceding tool-call pair and remove that chain.
+    """
+    # --- Strategy 1: recovery_boundary (existing logic, unchanged) ---
     recovery_boundary_index = next(
         (
             index
@@ -623,42 +636,79 @@ def recover_messages_from_missing_reasoning(
             },
         )
 
-    last_user_index = next(
-        (
-            index
-            for index in range(len(messages) - 1, -1, -1)
-            if messages[index].get("role") == "user"
-        ),
-        -1,
-    )
-    if last_user_index == -1:
-        return (
-            messages,
-            0,
-            None,
-            {
-                "strategy": "none",
-                "missing_indexes": missing_indexes,
-                "last_user_index": None,
-                "dropped_messages": 0,
-                "notice": None,
-            },
-        )
+    # --- Strategy 2: surgical removal (replaces nuclear latest_user) ---
+    removed_indices: set[int] = set()
+    missing_set = set(missing_indexes)
 
-    recovered = leading_system_messages(messages)
-    omitted_messages = len(messages) - len(recovered) - 1
-    recovered.append({"role": "system", "content": RECOVERY_SYSTEM_CONTENT})
-    recovered.append(messages[last_user_index])
+    for missing_idx in sorted(missing_indexes):
+        if missing_idx >= len(messages) or missing_idx in removed_indices:
+            continue
+        msg = messages[missing_idx]
+        if msg.get("role") != "assistant":
+            continue
+
+        removed_indices.add(missing_idx)
+
+        if msg.get("tool_calls"):
+            j = missing_idx + 1
+            while j < len(messages):
+                nxt = messages[j]
+                if nxt.get("role") == "tool":
+                    removed_indices.add(j)
+                    j += 1
+                elif nxt.get("role") == "assistant" and j in missing_set:
+                    removed_indices.add(j)
+                    if nxt.get("tool_calls"):
+                        j += 1
+                        continue
+                    j += 1
+                else:
+                    break
+        else:
+            # Message has no tool_calls but was marked as needing reasoning
+            # (preceded by tool results from a valid tool-call assistant).
+            # Remove only this message; the tool results remain valid context.
+            pass
+
+    if not removed_indices:
+        last_user_index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if messages[index].get("role") == "user"
+            ),
+            -1,
+        )
+        if last_user_index == -1:
+            return (
+                messages,
+                0,
+                None,
+                {
+                    "strategy": "none",
+                    "missing_indexes": missing_indexes,
+                    "last_user_index": None,
+                    "dropped_messages": 0,
+                    "notice": None,
+                },
+            )
+
+    recovered = [msg for i, msg in enumerate(messages) if i not in removed_indices]
+    omitted_messages = len(messages) - len(recovered)
+    # Surgical removal preserves all surrounding context, so there is no need to
+    # plant a user-facing recovery notice / boundary marker. Suppressing it keeps
+    # the conversation clean and prevents the recovery_boundary strategy from
+    # nuking earlier context on later turns.
     return (
         recovered,
         omitted_messages,
-        RECOVERY_NOTICE_CONTENT,
+        None,
         {
-            "strategy": "latest_user",
+            "strategy": "surgical",
             "missing_indexes": missing_indexes,
-            "last_user_index": last_user_index,
             "dropped_messages": omitted_messages,
-            "notice": RECOVERY_NOTICE_CONTENT,
+            "removed_indices": sorted(removed_indices),
+            "notice": None,
         },
     )
 
@@ -820,12 +870,6 @@ def prepare_upstream_request(
     recovery_dropped_messages = 0
     recovery_notice = None
     recovery_steps: list[dict[str, Any]] = []
-    if thinking_enabled and config.missing_reasoning_strategy == "recover":
-        boundary = active_messages_from_recovery_boundary(pre_repair_messages)
-        if boundary is not None:
-            messages_for_repair, retired_prefix_messages, boundary_step = boundary
-            continued_recovery_boundary = True
-            recovery_steps.append(boundary_step)
 
     messages, patched_count, missing_indexes, reasoning_diagnostics = (
         normalize_messages(
@@ -836,6 +880,29 @@ def prepare_upstream_request(
             keep_reasoning=not thinking_disabled,
         )
     )
+
+    if (
+        missing_indexes
+        and thinking_enabled
+        and config.missing_reasoning_strategy == "recover"
+    ):
+        boundary = active_messages_from_recovery_boundary(pre_repair_messages)
+        if boundary is not None:
+            messages_for_repair, retired_prefix_messages, boundary_step = boundary
+            continued_recovery_boundary = True
+            recovery_steps.append(boundary_step)
+            (
+                messages,
+                patched_count,
+                missing_indexes,
+                reasoning_diagnostics,
+            ) = normalize_messages(
+                messages_for_repair,
+                store,
+                cache_namespace,
+                repair_reasoning=thinking_enabled,
+                keep_reasoning=not thinking_disabled,
+            )
     while missing_indexes and config.missing_reasoning_strategy == "recover":
         recovered_messages, dropped_messages, notice, recovery_step = (
             recover_messages_from_missing_reasoning(messages, missing_indexes)

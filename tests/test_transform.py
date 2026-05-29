@@ -24,10 +24,111 @@ from deepseek_cursor_proxy.transform import (
     normalize_reasoning_effort,
     prepare_upstream_request,
     reasoning_cache_namespace,
+    recover_messages_from_missing_reasoning,
     rewrite_response_body,
     strip_cursor_thinking_blocks,
     strip_recovery_notice_for_upstream,
 )
+
+
+class SurgicalRecoveryTests(unittest.TestCase):
+    """Direct coverage for recover_messages_from_missing_reasoning.
+
+    Regression guard for the production incident where a single uncacheable
+    tool-call assistant inside a long conversation caused the proxy to drop
+    *all* but the last user message (observed: 307 of 309 messages dropped).
+    """
+
+    def _convo(self, n_turns: int) -> list[dict]:
+        messages: list[dict] = [{"role": "system", "content": "sys"}]
+        for i in range(n_turns):
+            messages.append({"role": "user", "content": f"user {i}"})
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": f"reasoning {i}",
+                    "tool_calls": [
+                        {
+                            "id": f"call_{i}",
+                            "type": "function",
+                            "function": {"name": "do", "arguments": "{}"},
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {"role": "tool", "tool_call_id": f"call_{i}", "content": f"r{i}"}
+            )
+            messages.append({"role": "assistant", "content": f"answer {i}"})
+        return messages
+
+    def test_single_miss_in_long_conversation_preserves_bulk_context(self) -> None:
+        messages = self._convo(50)  # 1 + 50*4 = 201 messages
+        # One uncacheable tool-call assistant somewhere in the middle.
+        missing_idx = 1 + 25 * 4 + 1  # the assistant of turn 25
+        self.assertEqual(messages[missing_idx]["role"], "assistant")
+        self.assertTrue(messages[missing_idx].get("tool_calls"))
+        del messages[missing_idx]["reasoning_content"]
+
+        recovered, dropped, notice, step = recover_messages_from_missing_reasoning(
+            messages, [missing_idx]
+        )
+
+        # Only the missing tool-call assistant + its tool result are removed.
+        self.assertEqual(dropped, 2)
+        self.assertEqual(len(recovered), len(messages) - 2)
+        self.assertEqual(step["strategy"], "surgical")
+        # No user-facing notice / boundary is planted for surgical removals.
+        self.assertIsNone(notice)
+        # Every other turn's content survives intact.
+        self.assertIn({"role": "user", "content": "user 0"}, recovered)
+        self.assertIn({"role": "user", "content": "user 49"}, recovered)
+        self.assertIn({"role": "assistant", "content": "answer 24"}, recovered)
+
+    def test_assistant_without_tool_calls_removes_only_itself(self) -> None:
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "u"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "do", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "content": "res"},
+            {"role": "assistant", "content": "final answer"},
+        ]
+        # The trailing plain-text assistant (needs reasoning because it follows
+        # a tool result) is the one missing reasoning.
+        recovered, dropped, notice, step = recover_messages_from_missing_reasoning(
+            messages, [4]
+        )
+        self.assertEqual(dropped, 1)
+        self.assertEqual(step["strategy"], "surgical")
+        self.assertIsNone(notice)
+        # The valid tool-call pair is untouched (no orphaned tool message).
+        roles = [m["role"] for m in recovered]
+        self.assertEqual(roles, ["system", "user", "assistant", "tool"])
+
+    def test_multiple_misses_remove_each_chain_independently(self) -> None:
+        messages = self._convo(10)
+        idx_a = 1 + 2 * 4 + 1
+        idx_b = 1 + 7 * 4 + 1
+        del messages[idx_a]["reasoning_content"]
+        del messages[idx_b]["reasoning_content"]
+        recovered, dropped, _notice, step = recover_messages_from_missing_reasoning(
+            messages, [idx_a, idx_b]
+        )
+        self.assertEqual(dropped, 4)  # two assistant+tool pairs
+        self.assertEqual(step["strategy"], "surgical")
+        self.assertEqual(len(recovered), len(messages) - 4)
 
 
 def _default_cache_namespace() -> str:
@@ -687,8 +788,10 @@ class CrossModeAndModelTests(unittest.TestCase):
         recovered_assistant.pop("reasoning_content", None)
 
         # Cursor's next request echoes the recovered assistant + tool result.
-        # The proxy should detect the recovery boundary, retire the prefix,
-        # and continue cleanly without recovering again.
+        # The stale `call_old` assistant is still missing its reasoning, so the
+        # proxy surgically removes that pair again (idempotent) while restoring
+        # the new assistant's reasoning from cache. Surrounding user context —
+        # including the original "old model turn" — is preserved.
         second_payload = {
             "model": "deepseek-v4-pro",
             "messages": [
@@ -705,10 +808,14 @@ class CrossModeAndModelTests(unittest.TestCase):
         )
 
         self.assertEqual(second_prepared.missing_reasoning_messages, 0)
-        self.assertEqual(second_prepared.recovered_reasoning_messages, 0)
-        self.assertEqual(second_prepared.recovery_dropped_messages, 0)
-        self.assertTrue(second_prepared.continued_recovery_boundary)
-        self.assertGreater(second_prepared.retired_prefix_messages, 0)
+        self.assertEqual(second_prepared.recovered_reasoning_messages, 1)
+        self.assertGreater(second_prepared.recovery_dropped_messages, 0)
+        self.assertFalse(second_prepared.continued_recovery_boundary)
+        self.assertEqual(second_prepared.retired_prefix_messages, 0)
+        self.assertEqual(
+            [m["role"] for m in second_prepared.payload["messages"]],
+            ["user", "user", "assistant", "tool"],
+        )
         self.assertEqual(
             second_prepared.payload["messages"][2]["reasoning_content"],
             "Need the new lookup.",
