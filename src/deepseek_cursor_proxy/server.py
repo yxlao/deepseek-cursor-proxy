@@ -154,15 +154,17 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
         log_cursor_request(payload, self.config)
 
+        t0 = time.perf_counter()
         prepared = prepare_upstream_request(
             payload,
             self.config,
             self.reasoning_store,
             authorization=cursor_authorization,
         )
+        context_elapsed_ms = (time.perf_counter() - t0) * 1000
         if trace is not None:
             trace.record_transform(prepared)
-        log_context_summary(prepared)
+        log_context_summary(prepared, elapsed_ms=context_elapsed_ms)
         if (
             prepared.missing_reasoning_messages
             and self.config.missing_reasoning_strategy == "reject"
@@ -974,6 +976,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--user-suffix",
+        metavar="TEXT",
+        default=None,
+        help="Append TEXT to every user message before forwarding to DeepSeek",
+    )
+    parser.add_argument(
         "--clear-reasoning-cache",
         action="store_true",
         help="Clear the local reasoning_content SQLite cache and exit",
@@ -1027,20 +1035,23 @@ def log_cursor_request(
     )
 
 
-def log_context_summary(prepared: Any) -> None:
+def log_context_summary(prepared: Any, elapsed_ms: float | None = None) -> None:
+    timing = f" ({elapsed_ms:.0f}ms)" if elapsed_ms is not None else ""
     status = context_status(prepared)
     if status == "ok":
         LOG.info(
-            "├ context status=ok reasoning_context=%s",
+            "├ context status=ok reasoning_context=%s%s",
             format_count(prepared.patched_reasoning_messages),
+            timing,
         )
         return
     LOG.info(
-        "├ context status=%s missing=%s recovered=%s dropped=%s",
+        "├ context status=%s missing=%s recovered=%s dropped=%s%s",
         status,
         format_count(prepared.missing_reasoning_messages),
         format_count(prepared.recovered_reasoning_messages),
         format_count(prepared.recovery_dropped_messages),
+        timing,
     )
 
 
@@ -1293,6 +1304,8 @@ def main(argv: list[str] | None = None) -> int:
         updates["reasoning_cache_max_rows"] = args.reasoning_cache_max_rows
     if args.missing_reasoning_strategy is not None:
         updates["missing_reasoning_strategy"] = args.missing_reasoning_strategy
+    if args.user_suffix is not None:
+        updates["user_message_suffix"] = str(args.user_suffix)
     if updates:
         config = replace(config, **updates)
 

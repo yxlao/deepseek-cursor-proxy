@@ -31,6 +31,7 @@ DEFAULT_CORS = False
 DEFAULT_MISSING_REASONING_STRATEGY = "recover"
 DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 DEFAULT_REASONING_CACHE_MAX_ROWS = 100_000
+DEFAULT_USER_MESSAGE_SUFFIX = ""
 
 DEFAULT_CONFIG_HEADER = (
     "# This file was created automatically at ~/.deepseek-cursor-proxy/config.yaml."
@@ -59,6 +60,7 @@ reasoning_content_path: {REASONING_CONTENT_FILE_NAME}
 missing_reasoning_strategy: {DEFAULT_MISSING_REASONING_STRATEGY}
 reasoning_cache_max_age_seconds: {DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS}
 reasoning_cache_max_rows: {DEFAULT_REASONING_CACHE_MAX_ROWS}
+user_message_suffix: ""
 """
 
 
@@ -212,6 +214,7 @@ class ProxyConfig:
     ngrok: bool = DEFAULT_NGROK
     ngrok_url: str | None = None
     trace_dir: Path | None = None
+    user_message_suffix: str = DEFAULT_USER_MESSAGE_SUFFIX
 
     @classmethod
     def from_file(
@@ -292,4 +295,8 @@ class ProxyConfig:
                 DEFAULT_NGROK,
             ),
             ngrok_url=as_optional_str(setting_value(settings, "ngrok_url")),
+            user_message_suffix=as_str(
+                setting_value(settings, "user_message_suffix"),
+                DEFAULT_USER_MESSAGE_SUFFIX,
+            ),
         )

@@ -4,12 +4,15 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import re
+import time
 from typing import Any
 
 from .config import ProxyConfig
 from .logging import LOG
 from .reasoning_store import (
     ReasoningStore,
+    compute_conversation_scopes,
+    compute_turn_signatures,
     conversation_scope,
     message_signature,
     tool_call_ids,
@@ -241,6 +244,8 @@ def normalize_message(
     cache_namespace: str,
     repair_reasoning: bool,
     keep_reasoning: bool,
+    scopes: list[str] | None = None,
+    turn_signatures: list[str] | None = None,
 ) -> tuple[dict[str, Any], bool, bool, dict[str, Any] | None]:
     if not isinstance(message, dict):
         message = {"role": "user", "content": str(message)}
@@ -277,19 +282,25 @@ def normalize_message(
                 needs_reasoning = assistant_needs_reasoning_for_tool_context(
                     normalized, prior_messages
                 )
-                lookup_scope = conversation_scope(prior_messages, cache_namespace)
+                lookup_scope = (
+                    scopes[len(prior_messages)]
+                    if scopes is not None
+                    else conversation_scope(prior_messages, cache_namespace)
+                )
                 lookup_keys = (
                     reasoning_lookup_keys(
                         normalized,
                         lookup_scope,
                         cache_namespace,
                         prior_messages,
+                        turn_signatures=turn_signatures,
                     )
                     if needs_reasoning
                     else []
                 )
                 hit_kind = None
                 if needs_reasoning and store is not None:
+                    _sg0 = time.perf_counter()
                     for lookup_key in lookup_keys:
                         restored = store.get(str(lookup_key["key"]))
                         if restored is not None:
@@ -298,13 +309,22 @@ def normalize_message(
                             normalized["reasoning_content"] = restored
                             patched = True
                             if not lookup_key.get("portable"):
+                                _sb0 = time.perf_counter()
                                 store.backfill_portable_aliases(
                                     normalized,
                                     restored,
                                     cache_namespace,
                                     prior_messages,
+                                    turn_signatures=turn_signatures,
                                 )
+                                _store_backfill_ms = (time.perf_counter() - _sb0) * 1000
+                            else:
+                                _store_backfill_ms = 0.0
                             break
+                    _store_get_ms = (time.perf_counter() - _sg0) * 1000
+                else:
+                    _store_get_ms = 0.0
+                    _store_backfill_ms = 0.0
                 if needs_reasoning and not patched:
                     missing = True
                 if needs_reasoning:
@@ -320,6 +340,8 @@ def normalize_message(
                         "tool_call_ids": tool_call_ids(normalized),
                         "lookup_keys": lookup_keys,
                         "hit_kind": hit_kind,
+                        "store_get_ms": _store_get_ms,
+                        "store_backfill_ms": _store_backfill_ms,
                     }
             elif assistant_needs_reasoning_for_tool_context(normalized, prior_messages):
                 diagnostic = {
@@ -329,7 +351,11 @@ def normalize_message(
                     "had_reasoning_content": True,
                     "patched": False,
                     "missing": False,
-                    "lookup_scope": conversation_scope(prior_messages, cache_namespace),
+                    "lookup_scope": (
+                        scopes[len(prior_messages)]
+                        if scopes is not None
+                        else conversation_scope(prior_messages, cache_namespace)
+                    ),
                     "message_signature": message_signature(normalized),
                     "tool_call_ids": tool_call_ids(normalized),
                     "lookup_keys": [],
@@ -348,6 +374,7 @@ def reasoning_lookup_keys(
     scope: str,
     cache_namespace: str = "",
     prior_messages: list[dict[str, Any]] | None = None,
+    turn_signatures: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     keys = [
         {
@@ -392,7 +419,11 @@ def reasoning_lookup_keys(
         for tool_name in tool_call_names(message)
     )
     if cache_namespace and prior_messages is not None:
-        turn_signature = turn_context_signature(prior_messages)
+        turn_signature = (
+            turn_signatures[len(prior_messages)]
+            if turn_signatures is not None
+            else turn_context_signature(prior_messages)
+        )
         keys.append(
             {
                 "kind": "portable_message_signature",
@@ -459,6 +490,8 @@ def normalize_messages(
     cache_namespace: str,
     repair_reasoning: bool,
     keep_reasoning: bool,
+    scopes: list[str] | None = None,
+    turn_signatures: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, list[int], list[dict[str, Any]]]:
     if not isinstance(messages, list):
         return [], 0, [], []
@@ -466,7 +499,12 @@ def normalize_messages(
     patched_count = 0
     missing_indexes: list[int] = []
     diagnostics: list[dict[str, Any]] = []
-    for message in messages:
+    _t_store_get = 0.0
+    _t_store_backfill = 0.0
+    _slowest_idx = -1
+    _slowest_ms = 0.0
+    for i, message in enumerate(messages):
+        _mt0 = time.perf_counter()
         normalized, patched, missing, diagnostic = normalize_message(
             message,
             store,
@@ -474,7 +512,18 @@ def normalize_messages(
             cache_namespace,
             repair_reasoning,
             keep_reasoning,
+            scopes=scopes,
+            turn_signatures=turn_signatures,
         )
+        _mt1 = time.perf_counter()
+        _msg_ms = (_mt1 - _mt0) * 1000
+        if _msg_ms > _slowest_ms:
+            _slowest_ms = _msg_ms
+            _slowest_idx = i
+        if diagnostic is not None and "store_get_ms" in diagnostic:
+            _t_store_get += diagnostic["store_get_ms"]
+        if diagnostic is not None and "store_backfill_ms" in diagnostic:
+            _t_store_backfill += diagnostic["store_backfill_ms"]
         normalized_messages.append(normalized)
         if patched:
             patched_count += 1
@@ -482,6 +531,19 @@ def normalize_messages(
             missing_indexes.append(len(normalized_messages) - 1)
         if diagnostic is not None:
             diagnostics.append(diagnostic)
+    _total_ms = sum(
+        (d.get("store_get_ms", 0) + d.get("store_backfill_ms", 0))
+        for d in diagnostics
+    )
+    LOG.info(
+        "├ diag    msgs=%d store_get=%.0fms store_backfill=%.0fms "
+        "slowest=i%d=%.0fms",
+        len(normalized_messages),
+        _t_store_get,
+        _t_store_backfill,
+        _slowest_idx,
+        _slowest_ms,
+    )
     return normalized_messages, patched_count, missing_indexes, diagnostics
 
 
@@ -802,6 +864,7 @@ def prepare_upstream_request(
         prepared.get("reasoning_effort"),
         authorization,
     )
+    _t0 = time.perf_counter()
     pre_repair_messages, _, _, _ = normalize_messages(
         payload.get("messages"),
         None,
@@ -809,10 +872,12 @@ def prepare_upstream_request(
         repair_reasoning=False,
         keep_reasoning=not thinking_disabled,
     )
+    _t1 = time.perf_counter()
     record_response_messages = pre_repair_messages
     record_response_scope = conversation_scope(
         record_response_messages, cache_namespace
     )
+    _t2 = time.perf_counter()
     messages_for_repair = pre_repair_messages
     continued_recovery_boundary = False
     retired_prefix_messages = 0
@@ -826,6 +891,11 @@ def prepare_upstream_request(
             messages_for_repair, retired_prefix_messages, boundary_step = boundary
             continued_recovery_boundary = True
             recovery_steps.append(boundary_step)
+    _t3 = time.perf_counter()
+
+    repair_scopes = compute_conversation_scopes(messages_for_repair, cache_namespace)
+    repair_turn_signatures = compute_turn_signatures(messages_for_repair)
+    _t4 = time.perf_counter()
 
     messages, patched_count, missing_indexes, reasoning_diagnostics = (
         normalize_messages(
@@ -834,8 +904,23 @@ def prepare_upstream_request(
             cache_namespace,
             repair_reasoning=thinking_enabled,
             keep_reasoning=not thinking_disabled,
+            scopes=repair_scopes,
+            turn_signatures=repair_turn_signatures,
         )
     )
+    _t5 = time.perf_counter()
+
+    LOG.info(
+        "├ timing  pre_norm=%.0fms scope=%.0fms boundary=%.0fms "
+        "hashes=%.0fms repair_norm=%.0fms msgs=%d",
+        (_t1 - _t0) * 1000,
+        (_t2 - _t1) * 1000,
+        (_t3 - _t2) * 1000,
+        (_t4 - _t3) * 1000,
+        (_t5 - _t4) * 1000,
+        len(messages_for_repair),
+    )
+
     while missing_indexes and config.missing_reasoning_strategy == "recover":
         recovered_messages, dropped_messages, notice, recovery_step = (
             recover_messages_from_missing_reasoning(messages, missing_indexes)
@@ -858,6 +943,8 @@ def prepare_upstream_request(
             cache_namespace,
             repair_reasoning=thinking_enabled,
             keep_reasoning=not thinking_disabled,
+            scopes=compute_conversation_scopes(recovered_messages, cache_namespace),
+            turn_signatures=compute_turn_signatures(recovered_messages),
         )
         reasoning_diagnostics.extend(latest_diagnostics)
     active_record_response_scope = conversation_scope(messages, cache_namespace)
@@ -866,6 +953,18 @@ def prepare_upstream_request(
         (active_record_response_scope, messages),
     )
     prepared["messages"] = strip_recovery_notice_for_upstream(messages)
+
+    if config.user_message_suffix:
+        suffix = "（" + config.user_message_suffix + "）"
+        prepared["messages"] = [
+            {
+                **msg,
+                "content": (msg.get("content") or "") + suffix,
+            }
+            if msg.get("role") == "user"
+            else msg
+            for msg in prepared["messages"]
+        ]
 
     return PreparedRequest(
         payload=prepared,

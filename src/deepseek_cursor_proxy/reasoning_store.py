@@ -102,6 +102,128 @@ def conversation_scope(messages: list[dict[str, Any]], namespace: str = "") -> s
     return _sha256_json(payload)
 
 
+def compute_conversation_scopes(
+    messages: list[dict[str, Any]], namespace: str = ""
+) -> list[str]:
+    """Pre-compute conversation scopes for every prefix position in O(n) time.
+
+    Returns a list where ``scopes[i]`` equals
+    ``conversation_scope(messages[:i], namespace)``.
+
+    Uses incremental SHA-256 hashing so the entire message list is serialized
+    only once, avoiding the O(n²) cost of calling ``conversation_scope``
+    repeatedly inside a message-normalization loop.
+    """
+    scopes: list[str] = []
+    hasher = hashlib.sha256()
+
+    if namespace:
+        ns_json = json.dumps(
+            namespace, ensure_ascii=False, separators=(",", ":")
+        )
+        # sort_keys=True → {"messages":[...],"namespace":"ns"}
+        prefix = b'{"messages":['
+        suffix = b'],"namespace":' + ns_json.encode("utf-8") + b"}"
+    else:
+        prefix = b"["
+        suffix = b"]"
+
+    hasher.update(prefix)
+
+    # Scope for empty prefix (index 0, before any messages)
+    clone = hasher.copy()
+    clone.update(suffix)
+    scopes.append(clone.hexdigest())
+
+    first = True
+    for message in messages:
+        if not first:
+            hasher.update(b",")
+        first = False
+
+        canonical = canonical_scope_message(message)
+        msg_json = json.dumps(
+            canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        hasher.update(msg_json.encode("utf-8"))
+
+        clone = hasher.copy()
+        clone.update(suffix)
+        scopes.append(clone.hexdigest())
+
+    return scopes
+
+
+def compute_turn_signatures(
+    messages: list[dict[str, Any]],
+) -> list[str]:
+    """Pre-compute turn_context_signature for every prefix position in O(n) time.
+
+    Returns a list where ``result[i]`` equals
+    ``turn_context_signature(messages[:i])``.
+
+    Uses incremental SHA-256 hashing.  The turn context resets at user-message
+    boundaries, so the total work is proportional to the number of messages
+    rather than O(n²).
+    """
+    signatures: list[str] = []
+    hasher = hashlib.sha256()
+    hasher.update(b"[")
+    first_in_turn = True
+
+    for i in range(len(messages) + 1):
+        # Save signature for prefix of size i
+        clone = hasher.copy()
+        clone.update(b"]")
+        signatures.append(clone.hexdigest())
+
+        if i >= len(messages):
+            break
+
+        msg = messages[i]
+        if msg.get("role") == "user":
+            # New turn: find the start of the consecutive-user group
+            turn_start = i
+            while (
+                turn_start > 0
+                and messages[turn_start - 1].get("role") == "user"
+            ):
+                turn_start -= 1
+            # Rebuild the hash from turn_start through i (one-time cost
+            # per turn, which is rare compared to the total message count).
+            hasher = hashlib.sha256()
+            hasher.update(b"[")
+            first_in_turn = True
+            for j in range(turn_start, i + 1):
+                if messages[j].get("role") == "system":
+                    continue
+                if not first_in_turn:
+                    hasher.update(b",")
+                first_in_turn = False
+                canonical = canonical_scope_message(messages[j])
+                msg_json = json.dumps(
+                    canonical,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                hasher.update(msg_json.encode("utf-8"))
+        elif msg.get("role") != "system":
+            if not first_in_turn:
+                hasher.update(b",")
+            first_in_turn = False
+            canonical = canonical_scope_message(msg)
+            msg_json = json.dumps(
+                canonical,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            hasher.update(msg_json.encode("utf-8"))
+
+    return signatures
+
+
 def turn_context_signature(prior_messages: list[dict[str, Any]]) -> str:
     last_user_index = next(
         (
@@ -150,11 +272,16 @@ def portable_reasoning_keys(
     message: dict[str, Any],
     cache_namespace: str,
     prior_messages: list[dict[str, Any]],
+    turn_signatures: list[str] | None = None,
 ) -> list[str]:
     if not cache_namespace:
         return []
 
-    turn_signature = turn_context_signature(prior_messages)
+    turn_signature = (
+        turn_signatures[len(prior_messages)]
+        if turn_signatures is not None
+        else turn_context_signature(prior_messages)
+    )
     keys = [
         f"namespace:{cache_namespace}:turn:{turn_signature}:"
         f"signature:{message_signature(message)}"
@@ -199,6 +326,7 @@ class ReasoningStore:
         )
         if isinstance(self.reasoning_content_path, Path):
             self.reasoning_content_path.chmod(0o600)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS reasoning_cache (
@@ -208,6 +336,10 @@ class ReasoningStore:
                 created_at REAL NOT NULL
             )
             """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reasoning_cache_created_at "
+            "ON reasoning_cache(created_at)"
         )
         self._conn.commit()
         self.prune()
@@ -292,17 +424,39 @@ class ReasoningStore:
         reasoning: str,
         cache_namespace: str,
         prior_messages: list[dict[str, Any]],
+        turn_signatures: list[str] | None = None,
     ) -> int:
         if not isinstance(reasoning, str):
             return 0
-        keys = portable_reasoning_keys(message, cache_namespace, prior_messages)
-        if not keys:
+        keys = portable_reasoning_keys(
+            message, cache_namespace, prior_messages,
+            turn_signatures=turn_signatures,
+        )
+        unique_keys = list(dict.fromkeys(keys))
+        if not unique_keys:
             return 0
         message_with_reasoning = dict(message)
         message_with_reasoning["reasoning_content"] = reasoning
-        for key in dict.fromkeys(keys):
-            self.put(key, reasoning, message_with_reasoning)
-        return len(keys)
+        message_json = json.dumps(
+            message_with_reasoning, ensure_ascii=False, sort_keys=True
+        )
+        now = time.time()
+        with self._lock:
+            for key in unique_keys:
+                self._conn.execute(
+                    """
+                    INSERT INTO reasoning_cache(key, reasoning, message_json, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        reasoning = excluded.reasoning,
+                        message_json = excluded.message_json,
+                        created_at = excluded.created_at
+                    """,
+                    (key, reasoning, message_json, now),
+                )
+            self._prune_locked()
+            self._conn.commit()
+        return len(unique_keys)
 
     def clear(self) -> int:
         with self._lock:
@@ -322,24 +476,34 @@ class ReasoningStore:
         deleted = 0
         if self.max_age_seconds is not None and self.max_age_seconds > 0:
             cutoff = time.time() - self.max_age_seconds
-            cursor = self._conn.execute(
-                "DELETE FROM reasoning_cache WHERE created_at < ?",
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM reasoning_cache WHERE created_at < ?",
                 (cutoff,),
-            )
-            deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+            ).fetchone()
+            if row and int(row[0]) > 0:
+                cursor = self._conn.execute(
+                    "DELETE FROM reasoning_cache WHERE created_at < ?",
+                    (cutoff,),
+                )
+                deleted += cursor.rowcount if cursor.rowcount != -1 else 0
 
         if self.max_rows is not None and self.max_rows > 0:
-            cursor = self._conn.execute(
-                """
-                DELETE FROM reasoning_cache
-                WHERE key NOT IN (
-                    SELECT key
-                    FROM reasoning_cache
-                    ORDER BY created_at DESC
-                    LIMIT ?
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM reasoning_cache"
+            ).fetchone()
+            count = int(row[0] if row else 0)
+            if count > self.max_rows:
+                cursor = self._conn.execute(
+                    """
+                    DELETE FROM reasoning_cache
+                    WHERE key NOT IN (
+                        SELECT key
+                        FROM reasoning_cache
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (self.max_rows,),
                 )
-                """,
-                (self.max_rows,),
-            )
-            deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+                deleted += cursor.rowcount if cursor.rowcount != -1 else 0
         return deleted
