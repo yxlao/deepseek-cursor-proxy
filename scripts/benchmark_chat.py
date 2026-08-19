@@ -30,6 +30,13 @@ def parse_case(value: str) -> tuple[str, str]:
     return model, effort
 
 
+def parse_auth_env(value: str) -> tuple[str, str]:
+    target_name, separator, environment_name = value.partition("=")
+    if not separator or not target_name or not environment_name:
+        raise argparse.ArgumentTypeError("auth environment must be TARGET=ENV_VAR")
+    return target_name, environment_name
+
+
 def benchmark(
     *, base_url: str, authorization: str, model: str, effort: str, prompt: str, timeout: float
 ) -> dict[str, Any]:
@@ -116,17 +123,37 @@ def main() -> int:
         help="repeatable MODEL:EFFORT case",
     )
     parser.add_argument("--api-key-env", default="DEEPSEEK_BENCHMARK_API_KEY")
+    parser.add_argument(
+        "--auth-env",
+        action="append",
+        type=parse_auth_env,
+        default=[],
+        metavar="TARGET=ENV_VAR",
+        help=(
+            "override the credential environment variable for a target; use this "
+            "for the Cloudflare route, which accepts PROXY_BEARER_TOKEN rather "
+            "than a DeepSeek API key"
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument(
         "--prompt",
         default="Propose a concise, safe plan for a one-file configuration change.",
     )
     args = parser.parse_args()
-    api_key = os.environ.get(args.api_key_env)
-    if not api_key:
-        parser.error(f"set {args.api_key_env}; its value is never printed")
-    authorization = api_key if api_key.lower().startswith("bearer ") else f"Bearer {api_key}"
+    target_auth_env = dict(args.auth_env)
     for target_name, base_url in args.target:
+        auth_env = target_auth_env.get(target_name, args.api_key_env)
+        api_key = os.environ.get(auth_env)
+        if not api_key:
+            parser.error(
+                f"set {auth_env} for target {target_name}; its value is never printed"
+            )
+        authorization = (
+            api_key
+            if api_key.lower().startswith("bearer ")
+            else f"Bearer {api_key}"
+        )
         for model, effort in args.case:
             result = benchmark(
                 base_url=base_url,
