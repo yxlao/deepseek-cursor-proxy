@@ -13,6 +13,7 @@ import json
 import os
 import time
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -37,8 +38,33 @@ def parse_auth_env(value: str) -> tuple[str, str]:
     return target_name, environment_name
 
 
+def parse_header_env(value: str) -> tuple[str, str, str]:
+    target_name, separator, header_and_environment = value.partition("=")
+    header_name, header_separator, environment_name = header_and_environment.partition(
+        ":"
+    )
+    if (
+        not separator
+        or not target_name
+        or not header_separator
+        or not header_name
+        or not environment_name
+    ):
+        raise argparse.ArgumentTypeError(
+            "header environment must be TARGET=HEADER_NAME:ENV_VAR"
+        )
+    return target_name, header_name, environment_name
+
+
 def benchmark(
-    *, base_url: str, authorization: str, model: str, effort: str, prompt: str, timeout: float
+    *,
+    base_url: str,
+    authorization: str,
+    model: str,
+    effort: str,
+    prompt: str,
+    timeout: float,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "model": model,
@@ -49,15 +75,18 @@ def benchmark(
         "reasoning_effort": effort,
     }
     request_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    headers = {
+        "Authorization": authorization,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
     request = Request(
         f"{base_url}/chat/completions",
         data=request_body,
         method="POST",
-        headers={
-            "Authorization": authorization,
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        },
+        headers=headers,
     )
     started = time.monotonic()
     first_byte_ms: int | None = None
@@ -102,6 +131,24 @@ def benchmark(
     }
 
 
+def benchmark_error(error: HTTPError | URLError) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "error_type": type(error).__name__,
+        "http_status": error.code if isinstance(error, HTTPError) else None,
+    }
+    if isinstance(error, HTTPError):
+        try:
+            body = json.loads(error.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return result
+        message = body.get("error", {}).get("message") if isinstance(body, dict) else None
+        if isinstance(message, str):
+            # Error text is useful for route diagnostics, but never retain an
+            # arbitrary large server response in a benchmark result.
+            result["error_message"] = message[:200]
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -135,6 +182,14 @@ def main() -> int:
             "than a DeepSeek API key"
         ),
     )
+    parser.add_argument(
+        "--header-env",
+        action="append",
+        type=parse_header_env,
+        default=[],
+        metavar="TARGET=HEADER_NAME:ENV_VAR",
+        help="add a target-specific request header from an environment variable",
+    )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument(
         "--prompt",
@@ -142,6 +197,11 @@ def main() -> int:
     )
     args = parser.parse_args()
     target_auth_env = dict(args.auth_env)
+    target_header_env: dict[str, list[tuple[str, str]]] = {}
+    for target_name, header_name, environment_name in args.header_env:
+        target_header_env.setdefault(target_name, []).append(
+            (header_name, environment_name)
+        )
     for target_name, base_url in args.target:
         auth_env = target_auth_env.get(target_name, args.api_key_env)
         api_key = os.environ.get(auth_env)
@@ -154,15 +214,32 @@ def main() -> int:
             if api_key.lower().startswith("bearer ")
             else f"Bearer {api_key}"
         )
+        extra_headers: dict[str, str] = {}
+        for header_name, environment_name in target_header_env.get(target_name, []):
+            value = os.environ.get(environment_name)
+            if not value:
+                parser.error(
+                    f"set {environment_name} for header {header_name} on target "
+                    f"{target_name}; its value is never printed"
+                )
+            extra_headers[header_name] = value
         for model, effort in args.case:
-            result = benchmark(
-                base_url=base_url,
-                authorization=authorization,
-                model=model,
-                effort=effort,
-                prompt=args.prompt,
-                timeout=args.timeout,
-            )
+            try:
+                result = benchmark(
+                    base_url=base_url,
+                    authorization=authorization,
+                    model=model,
+                    effort=effort,
+                    prompt=args.prompt,
+                    timeout=args.timeout,
+                    extra_headers=extra_headers,
+                )
+            except (HTTPError, URLError) as error:
+                result = {
+                    "model": model,
+                    "effective_reasoning_effort": effort,
+                    **benchmark_error(error),
+                }
             result["target"] = target_name
             print(json.dumps(result, sort_keys=True))
     return 0
