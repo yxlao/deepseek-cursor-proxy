@@ -79,6 +79,9 @@ def benchmark(
         "Authorization": authorization,
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
+        # Some edge security configurations reject urllib's default user agent.
+        # Use a stable, identifiable value so every target is measured equally.
+        "User-Agent": "deepseek-cursor-proxy-benchmark/1.0",
     }
     if extra_headers:
         headers.update(extra_headers)
