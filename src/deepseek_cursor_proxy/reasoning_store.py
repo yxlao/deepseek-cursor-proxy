@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
 import threading
 import time
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 
@@ -217,11 +218,24 @@ class ReasoningStore:
             self._conn.close()
 
     def put(self, key: str, reasoning: str, message: dict[str, Any]) -> None:
+        self.put_many((key,), reasoning, message)
+
+    def put_many(
+        self,
+        keys: Iterable[str],
+        reasoning: str,
+        message: dict[str, Any],
+    ) -> int:
+        """Store all aliases for a message in one SQLite transaction."""
         if not isinstance(reasoning, str):
-            return
+            return 0
+        unique_keys = list(dict.fromkeys(key for key in keys if isinstance(key, str)))
+        if not unique_keys:
+            return 0
         message_json = json.dumps(message, ensure_ascii=False, sort_keys=True)
+        now = time.time()
         with self._lock:
-            self._conn.execute(
+            self._conn.executemany(
                 """
                 INSERT INTO reasoning_cache(key, reasoning, message_json, created_at)
                 VALUES (?, ?, ?, ?)
@@ -230,10 +244,11 @@ class ReasoningStore:
                     message_json = excluded.message_json,
                     created_at = excluded.created_at
                 """,
-                (key, reasoning, message_json, time.time()),
+                ((key, reasoning, message_json, now) for key in unique_keys),
             )
             self._prune_locked()
             self._conn.commit()
+        return len(unique_keys)
 
     def get(self, key: str) -> str | None:
         with self._lock:
@@ -263,10 +278,7 @@ class ReasoningStore:
             keys.extend(
                 portable_reasoning_keys(message, cache_namespace, prior_messages)
             )
-        keys = list(dict.fromkeys(keys))
-        for key in keys:
-            self.put(key, reasoning, message)
-        return len(keys)
+        return self.put_many(keys, reasoning, message)
 
     def lookup_for_message(
         self,
@@ -300,9 +312,7 @@ class ReasoningStore:
             return 0
         message_with_reasoning = dict(message)
         message_with_reasoning["reasoning_content"] = reasoning
-        for key in dict.fromkeys(keys):
-            self.put(key, reasoning, message_with_reasoning)
-        return len(keys)
+        return self.put_many(keys, reasoning, message_with_reasoning)
 
     def clear(self) -> int:
         with self._lock:

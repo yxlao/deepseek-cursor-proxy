@@ -208,7 +208,7 @@ class TraceIntegrationTests(unittest.TestCase):
         with urlopen(request, timeout=5) as response:
             return json.loads(response.read())
 
-    def test_traces_unsupported_post_path_with_body(self) -> None:
+    def test_traces_unsupported_post_path_with_metadata_only(self) -> None:
         request = Request(
             f"{self.proxy.url}/v1/summarize",
             data=json.dumps(
@@ -231,14 +231,14 @@ class TraceIntegrationTests(unittest.TestCase):
         trace = _read_single_trace(self.writer.session_dir)
         self.assertEqual(trace["request"]["method"], "POST")
         self.assertEqual(trace["request"]["path"], "/v1/summarize")
-        self.assertEqual(trace["request"]["body"]["model"], "gpt-4o-mini")
         self.assertEqual(trace["request"]["summary"]["model"], "gpt-4o-mini")
+        self.assertNotIn("body", trace["request"])
         self.assertEqual(trace["completion"]["status"], "rejected")
         self.assertEqual(trace["completion"]["http_status"], 404)
         self.assertEqual(trace["transform"], {})
         self.assertEqual(_CannedUpstream.requests, [])
 
-    def test_captures_non_streaming_replay_without_api_key(self) -> None:
+    def test_captures_non_streaming_metadata_without_prompt_or_api_key(self) -> None:
         self._post(
             {
                 "model": "deepseek-v4-pro",
@@ -248,19 +248,12 @@ class TraceIntegrationTests(unittest.TestCase):
         trace = _read_single_trace(self.writer.session_dir)
         serialized = json.dumps(trace)
         self.assertEqual(trace["completion"]["status"], "completed")
-        self.assertEqual(
-            trace["request"]["body"]["messages"][0]["content"],
-            "What is tomorrow's date?",
-        )
-        self.assertEqual(
-            trace["upstream"]["response"]["body"]["json"]["choices"][0]["message"][
-                "reasoning_content"
-            ],
-            "I need the date.",
-        )
+        self.assertEqual(trace["request"]["summary"]["message_count"], 1)
+        self.assertNotIn("What is tomorrow's date?", serialized)
+        self.assertNotIn("I need the date.", serialized)
         self.assertNotIn("sk-from-cursor", serialized)
 
-    def test_captures_streaming_replay_chunks(self) -> None:
+    def test_captures_streaming_metadata_without_chunks(self) -> None:
         request = Request(
             f"{self.proxy.url}/v1/chat/completions",
             data=json.dumps(
@@ -280,13 +273,11 @@ class TraceIntegrationTests(unittest.TestCase):
             response.read()
         trace = _read_single_trace(self.writer.session_dir)
         self.assertEqual(trace["completion"]["status"], "completed")
-        self.assertIn(
-            "reasoning_content",
-            trace["upstream"]["stream"]["chunks"][0]["line"],
-        )
-        self.assertIn(
-            "<details>", trace["cursor_response"]["stream"]["chunks"][0]["line"]
-        )
+        self.assertGreater(trace["upstream"]["stream"]["chunks"], 0)
+        self.assertGreater(trace["cursor_response"]["stream"]["bytes"], 0)
+        serialized = json.dumps(trace)
+        self.assertNotIn("<details>", serialized)
+        self.assertNotIn('"answer"', serialized)
 
     def test_captures_recovery_diagnostics(self) -> None:
         """A request that triggers cold-cache recovery records the recovery

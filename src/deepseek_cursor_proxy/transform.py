@@ -71,12 +71,15 @@ ROLE_MESSAGE_FIELDS = {
     "tool": {"role", "content", "tool_call_id"},
 }
 
+# DeepSeek V4 currently accepts low/high/max.  Its documented compatibility
+# mapping is medium -> high and xhigh -> high for both V4 Flash and V4 Pro.
+# Keep this table in lockstep with https://api-docs.deepseek.com/guides/thinking_mode/
 EFFORT_ALIASES = {
-    "low": "high",
+    "low": "low",
     "medium": "high",
     "high": "high",
+    "xhigh": "high",
     "max": "max",
-    "xhigh": "max",
 }
 
 CURSOR_THINKING_BLOCK_RE = re.compile(
@@ -107,6 +110,10 @@ class PreparedRequest:
     payload: dict[str, Any]
     original_model: str
     upstream_model: str
+    client_thinking: str | None
+    effective_thinking: str
+    client_reasoning_effort: str | None
+    effective_reasoning_effort: str | None
     cache_namespace: str
     patched_reasoning_messages: int
     missing_reasoning_messages: int
@@ -124,10 +131,23 @@ class PreparedRequest:
     retired_prefix_messages: int = 0
 
 
-def normalize_reasoning_effort(value: Any) -> str:
+def normalize_reasoning_effort(value: Any, default: str = "high") -> str:
     if not isinstance(value, str):
-        return "high"
-    return EFFORT_ALIASES.get(value.strip().lower(), "high")
+        return EFFORT_ALIASES.get(default.strip().lower(), "high")
+    return EFFORT_ALIASES.get(
+        value.strip().lower(), EFFORT_ALIASES.get(default.strip().lower(), "high")
+    )
+
+
+def thinking_type(value: Any) -> str | None:
+    """Return a valid OpenAI-format thinking setting, if the client sent one."""
+    if not isinstance(value, dict):
+        return None
+    value_type = value.get("type")
+    if not isinstance(value_type, str):
+        return None
+    normalized = value_type.strip().lower()
+    return normalized if normalized in {"enabled", "disabled"} else None
 
 
 def extract_text_content(content: Any) -> str | None:
@@ -787,13 +807,28 @@ def prepare_upstream_request(
         if tool_choice is not None:
             prepared["tool_choice"] = tool_choice
 
-    prepared["thinking"] = {"type": config.thinking}
-    thinking_enabled = config.thinking == "enabled"
-    thinking_disabled = config.thinking == "disabled"
+    client_thinking = thinking_type(payload.get("thinking"))
+    effective_thinking = client_thinking or config.thinking
+    prepared["thinking"] = {"type": effective_thinking}
+    thinking_enabled = effective_thinking == "enabled"
+    thinking_disabled = effective_thinking == "disabled"
+    client_reasoning_effort = payload.get("reasoning_effort")
+    if not isinstance(client_reasoning_effort, str):
+        client_reasoning_effort = None
+    effective_reasoning_effort: str | None = None
     if thinking_enabled:
-        prepared["reasoning_effort"] = normalize_reasoning_effort(
-            config.reasoning_effort
+        effective_reasoning_effort = normalize_reasoning_effort(
+            client_reasoning_effort or config.reasoning_effort,
+            config.reasoning_effort,
         )
+        prepared["reasoning_effort"] = effective_reasoning_effort
+    else:
+        prepared.pop("reasoning_effort", None)
+
+    # DeepSeek V4 thinking mode rejects tool_choice.  The model remains free to
+    # use the declared tools, which is the only portable behavior for Cursor.
+    if thinking_enabled and reasoning_model_family(upstream_model) == "deepseek-v4":
+        prepared.pop("tool_choice", None)
 
     cache_namespace = reasoning_cache_namespace(
         config,
@@ -871,6 +906,10 @@ def prepare_upstream_request(
         payload=prepared,
         original_model=original_model,
         upstream_model=upstream_model,
+        client_thinking=client_thinking,
+        effective_thinking=effective_thinking,
+        client_reasoning_effort=client_reasoning_effort,
+        effective_reasoning_effort=effective_reasoning_effort,
         cache_namespace=cache_namespace,
         patched_reasoning_messages=patched_count,
         missing_reasoning_messages=len(missing_indexes),

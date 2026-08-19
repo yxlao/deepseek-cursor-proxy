@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 
-TRACE_SCHEMA_VERSION = 1
+TRACE_SCHEMA_VERSION = 2
 
 
 def utc_now_iso() -> str:
@@ -221,18 +221,15 @@ class TraceRequest:
     _finished: bool = False
 
     def record_cursor_body(self, payload: dict[str, Any]) -> None:
-        self.data["request"]["body"] = payload
         self.data["request"]["summary"] = payload_summary(payload)
 
     def record_cursor_body_bytes(self, body: bytes) -> None:
         self.data["request"]["body_bytes"] = len(body)
-        text = body.decode("utf-8", errors="replace")
         try:
-            payload = json.loads(text)
+            payload = json.loads(body.decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
-            self.data["request"]["body"] = {"text": text}
+            self.data["request"]["body_omitted"] = {"reason": "invalid_json"}
             return
-        self.data["request"]["body"] = payload
         if isinstance(payload, dict):
             self.data["request"]["summary"] = payload_summary(payload)
 
@@ -248,6 +245,10 @@ class TraceRequest:
         self.data["transform"] = {
             "original_model": prepared.original_model,
             "upstream_model": prepared.upstream_model,
+            "client_thinking": prepared.client_thinking,
+            "effective_thinking": prepared.effective_thinking,
+            "client_reasoning_effort": prepared.client_reasoning_effort,
+            "effective_reasoning_effort": prepared.effective_reasoning_effort,
             "cache_namespace": prepared.cache_namespace,
             "patched_reasoning_messages": prepared.patched_reasoning_messages,
             "missing_reasoning_messages": prepared.missing_reasoning_messages,
@@ -263,7 +264,6 @@ class TraceRequest:
             "reasoning_diagnostics": prepared.reasoning_diagnostics,
             "recovery_steps": prepared.recovery_steps,
             "upstream_request_summary": payload_summary(prepared.payload),
-            "upstream_request_body": prepared.payload,
         }
 
     def record_upstream_request(
@@ -293,7 +293,7 @@ class TraceRequest:
         if stream is not None:
             response["stream"] = stream
         if body is not None:
-            response["body"] = jsonable_body(body)
+            response["body_bytes"] = len(body)
         self.data["upstream"]["response"] = response
 
     def record_cursor_response(
@@ -307,27 +307,20 @@ class TraceRequest:
         if headers is not None:
             response["headers"] = sanitized_headers(headers)
         if body is not None:
-            response["body"] = jsonable_body(body)
+            response["body_bytes"] = len(body)
         self.data["cursor_response"].update(response)
 
     def record_stream_chunk(self, upstream_line: bytes, cursor_line: bytes) -> None:
-        upstream_stream = self.data["upstream"].setdefault("stream", {"chunks": []})
+        upstream_stream = self.data["upstream"].setdefault(
+            "stream", {"chunks": 0, "bytes": 0}
+        )
         cursor_stream = self.data["cursor_response"].setdefault(
-            "stream", {"chunks": []}
+            "stream", {"chunks": 0, "bytes": 0}
         )
-        index = len(upstream_stream["chunks"])
-        upstream_stream["chunks"].append(
-            {
-                "index": index,
-                "line": upstream_line.decode("utf-8", errors="replace"),
-            }
-        )
-        cursor_stream["chunks"].append(
-            {
-                "index": index,
-                "line": cursor_line.decode("utf-8", errors="replace"),
-            }
-        )
+        upstream_stream["chunks"] += 1
+        upstream_stream["bytes"] += len(upstream_line)
+        cursor_stream["chunks"] += 1
+        cursor_stream["bytes"] += len(cursor_line)
 
     def record_usage(self, usage: Any) -> None:
         if isinstance(usage, dict):

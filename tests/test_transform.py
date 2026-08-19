@@ -35,7 +35,7 @@ def _default_cache_namespace() -> str:
         ProxyConfig(),
         "deepseek-v4-pro",
         {"type": "enabled"},
-        "max",
+        "high",
     )
 
 
@@ -76,11 +76,11 @@ class ContentHelpersTests(unittest.TestCase):
         self.assertEqual(strip_cursor_thinking_blocks(kept), kept)
 
     def test_normalize_reasoning_effort_aliases(self) -> None:
-        self.assertEqual(normalize_reasoning_effort("low"), "high")
+        self.assertEqual(normalize_reasoning_effort("low"), "low")
         self.assertEqual(normalize_reasoning_effort("medium"), "high")
         self.assertEqual(normalize_reasoning_effort("high"), "high")
         self.assertEqual(normalize_reasoning_effort("max"), "max")
-        self.assertEqual(normalize_reasoning_effort("xhigh"), "max")
+        self.assertEqual(normalize_reasoning_effort("xhigh"), "high")
         self.assertEqual(normalize_reasoning_effort("nonsense"), "high")
 
 
@@ -103,7 +103,7 @@ class RequestPreparationTests(unittest.TestCase):
             self.store,
         )
         self.assertEqual(prepared.payload["tools"][0]["function"]["name"], "lookup")
-        self.assertEqual(prepared.payload["tool_choice"], "auto")
+        self.assertNotIn("tool_choice", prepared.payload)
         self.assertNotIn("functions", prepared.payload)
         self.assertNotIn("function_call", prepared.payload)
 
@@ -117,10 +117,50 @@ class RequestPreparationTests(unittest.TestCase):
             ProxyConfig(),
             self.store,
         )
-        self.assertEqual(
-            prepared.payload["tool_choice"],
-            {"type": "function", "function": {"name": "lookup"}},
+        self.assertNotIn("tool_choice", prepared.payload)
+
+    def test_preserves_valid_client_reasoning_settings(self) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": "low",
+            },
+            ProxyConfig(thinking="disabled", reasoning_effort="max"),
+            self.store,
         )
+        self.assertEqual(prepared.client_thinking, "enabled")
+        self.assertEqual(prepared.effective_thinking, "enabled")
+        self.assertEqual(prepared.client_reasoning_effort, "low")
+        self.assertEqual(prepared.effective_reasoning_effort, "low")
+        self.assertEqual(prepared.payload["thinking"], {"type": "enabled"})
+        self.assertEqual(prepared.payload["reasoning_effort"], "low")
+
+    def test_uses_configured_effort_only_when_client_omits_it(self) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            ProxyConfig(reasoning_effort="max"),
+            self.store,
+        )
+        self.assertIsNone(prepared.client_reasoning_effort)
+        self.assertEqual(prepared.effective_reasoning_effort, "max")
+        self.assertEqual(prepared.payload["reasoning_effort"], "max")
+
+    def test_tool_choice_is_retained_when_thinking_is_disabled(self) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": "required",
+            },
+            ProxyConfig(thinking="disabled"),
+            self.store,
+        )
+        self.assertEqual(prepared.payload["tool_choice"], "required")
 
     def test_max_completion_tokens_is_aliased_to_max_tokens(self) -> None:
         prepared = prepare_upstream_request(
@@ -366,14 +406,14 @@ class CrossModeAndModelTests(unittest.TestCase):
             config,
             "deepseek-v4-pro",
             {"type": "enabled"},
-            "max",
+            "high",
             "Bearer key-a",
         )
         namespace_flash = reasoning_cache_namespace(
             config,
             "deepseek-v4-flash",
             {"type": "enabled"},
-            "max",
+            "high",
             "Bearer key-a",
         )
         self.assertEqual(namespace_pro, namespace_flash)

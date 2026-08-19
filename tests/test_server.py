@@ -558,12 +558,17 @@ class HttpBoundaryTests(unittest.TestCase):
                 time.sleep(0.01)
         output = "\n".join(captured.output)
         self.assertEqual(status, 200)
-        self.assertIn("┌ request model=deepseek-v4-pro effort=max messages=1", output)
+        self.assertIn(
+            "model=deepseek-v4-pro client_thinking=<none> "
+            "effective_thinking=enabled client_effort=<none> "
+            "effective_effort=high messages=1",
+            output,
+        )
         self.assertIn("├ context status=ok reasoning_context=0", output)
         self.assertIn("└ stats", output)
         self.assertNotIn(" tools=", output)
         self.assertNotIn("├ send", output)
-        self.assertNotIn("hi", output.split("┌ request")[1].split("\n")[0])
+        self.assertNotIn('"hi"', output.split("┌ request")[1].split("\n")[0])
         self.assertNotIn("sk-from-cursor", output)
 
     def test_verbose_logging_includes_bodies_but_redacts_api_key(self) -> None:

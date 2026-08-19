@@ -65,6 +65,31 @@ class ReasoningStoreTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_stores_message_aliases_in_one_transaction(self) -> None:
+        store = ReasoningStore(":memory:")
+        try:
+            statements: list[str] = []
+            store._conn.set_trace_callback(statements.append)
+            message = {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "reasoning",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            }
+            stored = store.store_assistant_message(message, "scope")
+            self.assertGreater(stored, 1)
+            self.assertEqual(
+                sum(statement == "COMMIT" for statement in statements), 1
+            )
+        finally:
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

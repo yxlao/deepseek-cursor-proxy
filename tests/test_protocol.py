@@ -945,7 +945,9 @@ class StreamingDisplayTests(unittest.TestCase):
             ThreadingHTTPServer(("127.0.0.1", 0), _ReasoningStreamHandler)
         )
         self.store = ReasoningStore(":memory:")
-        self.proxy = _start_proxy(self.upstream.url, self.store)
+        self.proxy = _start_proxy(
+            self.upstream.url, self.store, display_reasoning=True
+        )
 
     def tearDown(self) -> None:
         self.proxy.close()
@@ -987,6 +989,8 @@ class StreamingDisplayTests(unittest.TestCase):
 
 
 class NonStreamingDisplayTests(_StrictUpstreamCase):
+    config_overrides = {"display_reasoning": True}
+
     def test_non_streaming_response_mirrors_reasoning_into_details_block(
         self,
     ) -> None:
@@ -1282,7 +1286,9 @@ class StreamingCacheTimingTests(unittest.TestCase):
             ThreadingHTTPServer(("127.0.0.1", 0), _SlowToolStreamHandler)
         )
         self.store = ReasoningStore(":memory:")
-        self.proxy = _start_proxy(self.upstream.url, self.store)
+        self.proxy = _start_proxy(
+            self.upstream.url, self.store, display_reasoning=True
+        )
 
     def tearDown(self) -> None:
         self.proxy.close()

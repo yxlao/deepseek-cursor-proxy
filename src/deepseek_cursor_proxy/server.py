@@ -44,6 +44,10 @@ class RequestBodyTooLarge(ValueError):
 class ProxyResponseResult:
     sent: bool
     usage: dict[str, Any] | None = None
+    reasoning_cache_writes: int = 0
+    reasoning_chars: int = 0
+    visible_output_chars: int = 0
+    tool_call_count: int = 0
 
 
 class DeepSeekProxyServer(ThreadingHTTPServer):
@@ -94,6 +98,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         started = time.monotonic()
+        request_id = f"{time.monotonic_ns():x}"[-12:]
         request_path = urlparse(self.path).path
         trace = self._start_trace(request_path)
         if self.config.verbose:
@@ -149,10 +154,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         if trace is not None:
             trace.record_cursor_body(payload)
 
+        request_body_bytes = int_or_zero(self.headers.get("Content-Length"))
+
         if self.config.verbose:
             log_json("cursor request body", payload)
-
-        log_cursor_request(payload, self.config)
 
         prepared = prepare_upstream_request(
             payload,
@@ -162,6 +167,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         )
         if trace is not None:
             trace.record_transform(prepared)
+        log_cursor_request(request_id, payload, prepared)
         log_context_summary(prepared)
         if (
             prepared.missing_reasoning_messages
@@ -236,6 +242,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             method="POST",
             headers=upstream_headers,
         )
+        proxy_prepare_ms = elapsed_ms(started)
 
         if self.config.verbose:
             log_send_summary(prepared)
@@ -245,6 +252,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         ).start()
 
         try:
+            upstream_started = time.monotonic()
             if self.config.verbose:
                 LOG.info("forwarding to %s", upstream_url)
             response = urlopen(request, timeout=self.config.request_timeout)
@@ -255,6 +263,19 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 exc.code,
                 bool(prepared.payload.get("stream")),
                 elapsed_ms(started),
+            )
+            log_request_timing(
+                request_id,
+                prepared,
+                payload,
+                request_body_bytes,
+                upstream_body,
+                proxy_prepare_ms,
+                elapsed_ms(upstream_started),
+                0,
+                elapsed_ms(started),
+                status="upstream_error",
+                upstream_status=exc.code,
             )
             self._send_upstream_error(exc, trace=trace)
             self._finish_trace(
@@ -271,6 +292,19 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 elapsed_ms(started),
                 exc.reason,
             )
+            log_request_timing(
+                request_id,
+                prepared,
+                payload,
+                request_body_bytes,
+                upstream_body,
+                proxy_prepare_ms,
+                elapsed_ms(upstream_started),
+                0,
+                elapsed_ms(started),
+                status="upstream_error",
+                upstream_status=502,
+            )
             self._send_json(
                 502,
                 {"error": {"message": f"Upstream request failed: {exc.reason}"}},
@@ -284,6 +318,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
         try:
             with response:
+                response_started = time.monotonic()
+                time_to_first_upstream_byte_ms = elapsed_ms(upstream_started)
                 upstream_status = getattr(response, "status", 200)
                 if self.config.verbose:
                     LOG.info(
@@ -318,6 +354,20 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     )
                 if not sent_response.sent:
                     spinner.stop()
+                    log_request_timing(
+                        request_id,
+                        prepared,
+                        payload,
+                        request_body_bytes,
+                        upstream_body,
+                        proxy_prepare_ms,
+                        time_to_first_upstream_byte_ms,
+                        elapsed_ms(response_started),
+                        elapsed_ms(started),
+                        status="client_disconnected",
+                        upstream_status=upstream_status,
+                        result=sent_response,
+                    )
                     self._finish_trace(
                         trace,
                         "client_disconnected",
@@ -327,6 +377,20 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     return
                 spinner.stop()
                 log_stats_summary(sent_response.usage)
+                log_request_timing(
+                    request_id,
+                    prepared,
+                    payload,
+                    request_body_bytes,
+                    upstream_body,
+                    proxy_prepare_ms,
+                    time_to_first_upstream_byte_ms,
+                    elapsed_ms(response_started),
+                    elapsed_ms(started),
+                    status="completed",
+                    upstream_status=upstream_status,
+                    result=sent_response,
+                )
                 self._finish_trace(
                     trace,
                     "completed",
@@ -672,6 +736,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
 
         accumulator = StreamAccumulator()
         usage: dict[str, Any] | None = None
+        reasoning_cache_writes = 0
         display_adapter = (
             CursorReasoningDisplayAdapter(self.config.collapsible_reasoning)
             if self.config.display_reasoning
@@ -708,6 +773,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     finalized,
                     pending_recovery_notice,
                     chunk_usage,
+                    chunk_cache_writes,
                 ) = self._rewrite_sse_line(
                     line,
                     original_model,
@@ -720,6 +786,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 )
                 if chunk_usage is not None:
                     usage = chunk_usage
+                reasoning_cache_writes += chunk_cache_writes
                 if trace is not None:
                     trace.record_stream_chunk(line, rewritten)
                 if not self._write_to_client(
@@ -747,12 +814,23 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     )
                     for ctx_scope, prior_messages in response_contexts
                 )
+                reasoning_cache_writes += stored
                 if self.config.verbose and stored:
                     LOG.info(
                         "stored %s streaming reasoning cache key(s) before exit",
                         stored,
                     )
-        return ProxyResponseResult(True, usage)
+        reasoning_chars, visible_output_chars, tool_call_count = stream_metrics(
+            accumulator
+        )
+        return ProxyResponseResult(
+            True,
+            usage,
+            reasoning_cache_writes,
+            reasoning_chars,
+            visible_output_chars,
+            tool_call_count,
+        )
 
     def _rewrite_sse_line(
         self,
@@ -764,10 +842,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         display_adapter: CursorReasoningDisplayAdapter | None,
         recovery_notice: str | None = None,
         trace: TraceRequest | None = None,
-    ) -> tuple[bytes, bool, str | None, dict[str, Any] | None]:
+    ) -> tuple[bytes, bool, str | None, dict[str, Any] | None, int]:
         stripped = line.strip()
         if not stripped.startswith(b"data:"):
-            return line, False, recovery_notice, None
+            return line, False, recovery_notice, None, 0
 
         data = stripped[len(b"data:") :].strip()
         if data == b"[DONE]":
@@ -790,7 +868,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     prefix += sse_data(
                         recovery_notice_chunk(original_model, recovery_notice)
                     )
-                return prefix + b"data: [DONE]\n\n", True, None, None
+                return prefix + b"data: [DONE]\n\n", True, None, None, stored
             closing_chunk = display_adapter.flush_chunk(original_model)
             if closing_chunk is not None:
                 prefix += sse_data(closing_chunk)
@@ -798,12 +876,12 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 prefix += sse_data(
                     recovery_notice_chunk(original_model, recovery_notice)
                 )
-            return prefix + b"data: [DONE]\n\n", True, None, None
+            return prefix + b"data: [DONE]\n\n", True, None, None, stored
 
         try:
             chunk = json.loads(data.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return line, False, recovery_notice, None
+            return line, False, recovery_notice, None, 0
 
         if isinstance(chunk, dict):
             if recovery_notice and inject_recovery_notice(chunk, recovery_notice):
@@ -839,8 +917,9 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 False,
                 recovery_notice,
                 chunk_usage if isinstance(chunk_usage, dict) else None,
+                stored,
             )
-        return line, False, recovery_notice, None
+        return line, False, recovery_notice, None, 0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -1014,16 +1093,79 @@ def usage_from_body(body: bytes) -> dict[str, Any] | None:
     return None
 
 
-def log_cursor_request(
-    payload: dict[str, Any],
-    config: ProxyConfig,
-) -> None:
-    model = str(payload.get("model") or config.upstream_model)
+def log_cursor_request(request_id: str, payload: dict[str, Any], prepared: Any) -> None:
     LOG.info(
-        "┌ request model=%s effort=%s messages=%s",
-        model,
-        config.reasoning_effort,
+        (
+            "┌ request id=%s model=%s client_thinking=%s effective_thinking=%s "
+            "client_effort=%s effective_effort=%s messages=%s"
+        ),
+        request_id,
+        prepared.upstream_model,
+        prepared.client_thinking or "<none>",
+        prepared.effective_thinking,
+        prepared.client_reasoning_effort or "<none>",
+        prepared.effective_reasoning_effort or "<none>",
         format_count(message_count(payload)),
+    )
+
+
+def stream_metrics(accumulator: StreamAccumulator) -> tuple[int, int, int]:
+    choices = accumulator.choices.values()
+    return (
+        sum(len(choice.reasoning_content) for choice in choices),
+        sum(len(choice.content) for choice in choices),
+        sum(len(choice.tool_calls) for choice in choices),
+    )
+
+
+def log_request_timing(
+    request_id: str,
+    prepared: Any,
+    cursor_payload: dict[str, Any],
+    request_body_bytes: int,
+    upstream_body: bytes,
+    proxy_prepare_ms: int,
+    time_to_first_upstream_byte_ms: int,
+    stream_duration_ms: int,
+    total_proxy_ms: int,
+    *,
+    status: str,
+    upstream_status: int,
+    result: ProxyResponseResult | None = None,
+) -> None:
+    usage = result.usage if result is not None else None
+    LOG.info(
+        (
+            "└ timing id=%s status=%s upstream_status=%s model=%s "
+            "effective_effort=%s request_body_bytes=%s upstream_body_bytes=%s "
+            "message_count=%s proxy_prepare_ms=%s "
+            "time_to_first_upstream_byte_ms=%s stream_duration_ms=%s "
+            "total_proxy_ms=%s reasoning_chars=%s visible_output_chars=%s "
+            "tool_call_count=%s reasoning_cache_writes=%s "
+            "reasoning_cache_hits=%s recovery_events=%s prompt_tokens=%s "
+            "completion_tokens=%s reasoning_tokens=%s"
+        ),
+        request_id,
+        status,
+        upstream_status,
+        prepared.upstream_model,
+        prepared.effective_reasoning_effort or "<none>",
+        request_body_bytes,
+        len(upstream_body),
+        message_count(cursor_payload),
+        proxy_prepare_ms,
+        time_to_first_upstream_byte_ms,
+        stream_duration_ms,
+        total_proxy_ms,
+        result.reasoning_chars if result is not None else 0,
+        result.visible_output_chars if result is not None else 0,
+        result.tool_call_count if result is not None else 0,
+        result.reasoning_cache_writes if result is not None else 0,
+        prepared.patched_reasoning_messages,
+        prepared.recovered_reasoning_messages,
+        format_usage_count(usage, "prompt_tokens"),
+        format_usage_count(usage, "completion_tokens"),
+        format_count(reasoning_token_count(usage)),
     )
 
 
