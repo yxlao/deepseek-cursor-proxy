@@ -184,18 +184,63 @@ def normalize_tool_call(tool_call: Any) -> dict[str, Any]:
     return normalized
 
 
-def normalize_tool(tool: Any) -> dict[str, Any]:
+def normalize_tool(tool: Any) -> dict[str, Any] | None:
+    """Return a DeepSeek-compatible function tool, or ``None`` if unsupported.
+
+    DeepSeek only accepts ``{"type": "function", ...}`` entries. OpenAI-format
+    clients also send ``{"type": "custom", ...}`` free-form tools (Cursor does
+    this for GPT-named models), which DeepSeek rejects with
+    ``tools[i].type: unknown variant custom, expected function``.
+    """
     if not isinstance(tool, dict):
-        return {
-            "type": "function",
-            "function": {"name": "", "description": "", "parameters": {}},
-        }
+        return None
+    tool_type = tool.get("type") or "function"
+    if tool_type != "function":
+        return None
+    function = tool.get("function")
+    if not isinstance(function, dict) or not function.get("name"):
+        return None
     normalized = dict(tool)
-    normalized["type"] = normalized.get("type") or "function"
-    function = normalized.get("function")
-    if isinstance(function, dict):
-        normalized["function"] = function
+    normalized["type"] = "function"
     return normalized
+
+
+def tool_label(tool: Any) -> str:
+    if not isinstance(tool, dict):
+        return "unnamed"
+    function = tool.get("function")
+    if isinstance(function, dict) and function.get("name"):
+        return str(function["name"])
+    if tool.get("name"):
+        return str(tool["name"])
+    tool_type = tool.get("type")
+    return f"{tool_type} tool" if tool_type else "unnamed"
+
+
+def normalize_tools(tools: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split client tools into DeepSeek-compatible ones and dropped labels."""
+    kept: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    if not isinstance(tools, list):
+        return kept, dropped
+    for tool in tools:
+        normalized = normalize_tool(tool)
+        if normalized is None:
+            dropped.append(tool_label(tool))
+        else:
+            kept.append(normalized)
+    return kept, dropped
+
+
+def tool_names(tools: Any) -> set[str]:
+    names: set[str] = set()
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict):
+                function = tool.get("function")
+                if isinstance(function, dict) and function.get("name"):
+                    names.add(str(function["name"]))
+    return names
 
 
 def legacy_function_to_tool(function: Any) -> dict[str, Any]:
@@ -230,8 +275,8 @@ def normalize_tool_choice(tool_choice: Any) -> Any:
                     "type": "function",
                     "function": {"name": str(function["name"])},
                 }
-        return tool_choice
-    return tool_choice
+        return None
+    return None
 
 
 def normalize_message(
@@ -770,7 +815,16 @@ def prepare_upstream_request(
         prepared["stream_options"] = stream_options
 
     if "tools" in prepared and isinstance(prepared["tools"], list):
-        prepared["tools"] = [normalize_tool(tool) for tool in prepared["tools"]]
+        normalized_tools, dropped_tools = normalize_tools(prepared["tools"])
+        if dropped_tools:
+            LOG.warning(
+                "dropping tool(s) DeepSeek cannot accept: %s",
+                ", ".join(dropped_tools),
+            )
+        if normalized_tools:
+            prepared["tools"] = normalized_tools
+        else:
+            prepared.pop("tools", None)
     elif isinstance(payload.get("functions"), list):
         prepared["tools"] = [
             legacy_function_to_tool(function) for function in payload["functions"]
@@ -778,6 +832,14 @@ def prepare_upstream_request(
 
     if "tool_choice" in prepared:
         tool_choice = normalize_tool_choice(prepared["tool_choice"])
+        available_tools = tool_names(prepared.get("tools"))
+        if (
+            isinstance(tool_choice, dict)
+            and tool_choice["function"]["name"] not in available_tools
+        ):
+            # A forced tool that was just dropped (e.g. OpenAI-only `custom`)
+            # can no longer be honored; fall back to the model's own choice.
+            tool_choice = None
         if tool_choice is None:
             prepared.pop("tool_choice", None)
         else:

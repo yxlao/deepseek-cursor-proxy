@@ -122,6 +122,101 @@ class RequestPreparationTests(unittest.TestCase):
             {"type": "function", "function": {"name": "lookup"}},
         )
 
+    def test_custom_tool_type_is_dropped_with_warning(self) -> None:
+        # Cursor sends OpenAI-only free-form tools (`type: "custom"`) when the
+        # selected model looks like a GPT model; DeepSeek rejects the whole
+        # request with `tools[i].type: unknown variant custom, expected
+        # function`, so those entries have to be filtered out.
+        with self.assertLogs("deepseek_cursor_proxy", level="WARNING") as captured:
+            prepared = prepare_upstream_request(
+                {
+                    "model": "deepseek-flash",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "parameters": {"type": "object"},
+                            },
+                        },
+                        {
+                            "type": "custom",
+                            "name": "apply_patch",
+                            "description": "Free-form patch tool",
+                        },
+                    ],
+                },
+                ProxyConfig(),
+                self.store,
+            )
+        self.assertEqual(
+            [tool["function"]["name"] for tool in prepared.payload["tools"]],
+            ["read_file"],
+        )
+        self.assertIn("apply_patch", "\n".join(captured.output))
+
+    def test_tools_and_tool_choice_are_removed_when_nothing_survives(self) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "custom", "name": "apply_patch"}],
+                "tool_choice": {"type": "custom", "name": "apply_patch"},
+            },
+            ProxyConfig(),
+            self.store,
+        )
+        self.assertNotIn("tools", prepared.payload)
+        self.assertNotIn("tool_choice", prepared.payload)
+
+    def test_tool_choice_to_a_dropped_tool_is_removed(self) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "read_file", "parameters": {}},
+                    },
+                    {"type": "custom", "name": "apply_patch"},
+                ],
+                "tool_choice": {
+                    "type": "function",
+                    "function": {"name": "apply_patch"},
+                },
+            },
+            ProxyConfig(),
+            self.store,
+        )
+        self.assertEqual(
+            [tool["function"]["name"] for tool in prepared.payload["tools"]],
+            ["read_file"],
+        )
+        self.assertNotIn("tool_choice", prepared.payload)
+
+    def test_function_tool_without_name_is_dropped(self) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {"type": "function"},
+                    {
+                        "type": "function",
+                        "function": {"name": "read_file", "parameters": {}},
+                    },
+                ],
+            },
+            ProxyConfig(),
+            self.store,
+        )
+        self.assertEqual(
+            [tool["function"]["name"] for tool in prepared.payload["tools"]],
+            ["read_file"],
+        )
+
     def test_max_completion_tokens_is_aliased_to_max_tokens(self) -> None:
         prepared = prepare_upstream_request(
             {
