@@ -186,6 +186,41 @@ class RequestPreparationTests(unittest.TestCase):
         self.assertEqual(prepared.payload["model"], "deepseek-v4-pro")
         self.assertIn("non-DeepSeek", "\n".join(captured.output))
 
+    def test_client_1m_context_marker_is_stripped_before_upstream(self) -> None:
+        # Claude Code / Cherry Studio decorate 1M-capable model ids with a
+        # `[1m]` suffix that DeepSeek's OpenAI-format API rejects with a 400.
+        # The proxy must accept it (that is what makes the client's 1M budget
+        # work) while sending the bare model name upstream.
+        with self.assertNoLogs("deepseek_cursor_proxy", level="WARNING"):
+            prepared = prepare_upstream_request(
+                {
+                    "model": "deepseek-flash[1m]",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                ProxyConfig(),
+                self.store,
+            )
+        self.assertEqual(prepared.original_model, "deepseek-flash[1m]")
+        self.assertEqual(prepared.upstream_model, "deepseek-flash")
+        self.assertEqual(prepared.payload["model"], "deepseek-flash")
+
+    def test_1m_context_marker_does_not_split_reasoning_cache(self) -> None:
+        # Switching the model id between `deepseek-flash` and
+        # `deepseek-flash[1m]` mid-conversation must not orphan the cached
+        # reasoning, since both resolve to the same upstream model.
+        messages = [{"role": "user", "content": "read README"}]
+        plain = prepare_upstream_request(
+            {"model": "deepseek-flash", "messages": messages},
+            ProxyConfig(),
+            self.store,
+        )
+        marked = prepare_upstream_request(
+            {"model": "deepseek-flash[1M]", "messages": messages},
+            ProxyConfig(),
+            self.store,
+        )
+        self.assertEqual(plain.cache_namespace, marked.cache_namespace)
+
     def test_thinking_disabled_strips_reasoning_from_assistant_history(self) -> None:
         prepared = prepare_upstream_request(
             {

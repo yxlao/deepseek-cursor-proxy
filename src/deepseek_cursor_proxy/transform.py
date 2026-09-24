@@ -678,12 +678,29 @@ def assistant_needs_reasoning_for_tool_context(
     return False
 
 
+_ONE_M_CONTEXT_MARKER = re.compile(r"\[1m\]$", re.IGNORECASE)
+
+
 def upstream_model_for(original_model: str, config: ProxyConfig) -> str:
-    if original_model.startswith("deepseek-"):
-        return original_model
+    # `[1m]` is a client-side context marker (Claude Code parses it to raise
+    # its local budget to 1M, Cherry Studio and other agents append it for
+    # backends that declare a >=1M window). DeepSeek's OpenAI-format API
+    # rejects the suffix, while `deepseek-flash` / `deepseek-v4-pro` serve 1M
+    # natively, so it is dropped before forwarding upstream. Keeping the
+    # normalization here also keeps the reasoning cache namespace identical
+    # whether or not the client decorates the model id.
+    model = _ONE_M_CONTEXT_MARKER.sub("", original_model.strip())
+    if model != original_model:
+        LOG.info(
+            "stripping client-side 1M context marker %r -> %r",
+            original_model,
+            model,
+        )
+    if model.startswith("deepseek-"):
+        return model
     LOG.warning(
         "rewriting non-DeepSeek model %r to configured fallback %r",
-        original_model,
+        model,
         config.upstream_model,
     )
     return config.upstream_model
