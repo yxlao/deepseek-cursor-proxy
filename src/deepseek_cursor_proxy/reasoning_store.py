@@ -177,15 +177,31 @@ def portable_reasoning_keys(
     return keys
 
 
+# Pruning is the only expensive operation in this store: it scans the whole
+# table. Doing it on every put costs ~130 ms per row once the cache reaches a
+# few tens of megabytes, which turns a request that stores a few hundred rows
+# into a minute of work while holding the store lock. One request writes many
+# rows at once, so the cap is still enforced within the same request: the
+# interval only limits how often the scan repeats, and the put counter makes
+# sure a run of writes cannot go unbounded.
+DEFAULT_PRUNE_INTERVAL_SECONDS = 60.0
+DEFAULT_PRUNE_EVERY_PUTS = 200
+
+
 class ReasoningStore:
     def __init__(
         self,
         reasoning_content_path: str | Path,
         max_age_seconds: int | None = None,
         max_rows: int | None = None,
+        prune_interval_seconds: float = DEFAULT_PRUNE_INTERVAL_SECONDS,
+        prune_every_puts: int = DEFAULT_PRUNE_EVERY_PUTS,
     ) -> None:
         self.max_age_seconds = max_age_seconds
         self.max_rows = max_rows
+        self.prune_interval_seconds = prune_interval_seconds
+        self.prune_every_puts = prune_every_puts
+        self._puts_since_prune = 0
         if str(reasoning_content_path) == ":memory:":
             self.reasoning_content_path: str | Path = ":memory:"
         else:
@@ -199,6 +215,12 @@ class ReasoningStore:
         )
         if isinstance(self.reasoning_content_path, Path):
             self.reasoning_content_path.chmod(0o600)
+        # WAL lets readers keep working while a write commits, and NORMAL drops
+        # the per-commit fsync that dominated a burst of puts. Both are stored in
+        # the database file, so they survive a restart.
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS reasoning_cache (
@@ -209,8 +231,15 @@ class ReasoningStore:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS reasoning_cache_created_at
+            ON reasoning_cache(created_at)
+            """
+        )
         self._conn.commit()
         self.prune()
+        self._last_prune = time.monotonic()
 
     def close(self) -> None:
         with self._lock:
@@ -232,7 +261,11 @@ class ReasoningStore:
                 """,
                 (key, reasoning, message_json, time.time()),
             )
-            self._prune_locked()
+            self._puts_since_prune += 1
+            if self._prune_due_locked():
+                self._prune_locked()
+                self._last_prune = time.monotonic()
+                self._puts_since_prune = 0
             self._conn.commit()
 
     def get(self, key: str) -> str | None:
@@ -315,8 +348,20 @@ class ReasoningStore:
     def prune(self) -> int:
         with self._lock:
             deleted = self._prune_locked()
+            self._last_prune = time.monotonic()
+            self._puts_since_prune = 0
             self._conn.commit()
         return deleted
+
+    def _prune_due_locked(self) -> bool:
+        if not (
+            (self.max_age_seconds is not None and self.max_age_seconds > 0)
+            or (self.max_rows is not None and self.max_rows > 0)
+        ):
+            return False
+        if self._puts_since_prune >= self.prune_every_puts:
+            return True
+        return time.monotonic() - self._last_prune >= self.prune_interval_seconds
 
     def _prune_locked(self) -> int:
         deleted = 0
@@ -329,17 +374,20 @@ class ReasoningStore:
             deleted += cursor.rowcount if cursor.rowcount != -1 else 0
 
         if self.max_rows is not None and self.max_rows > 0:
-            cursor = self._conn.execute(
-                """
-                DELETE FROM reasoning_cache
-                WHERE key NOT IN (
-                    SELECT key
-                    FROM reasoning_cache
-                    ORDER BY created_at DESC
-                    LIMIT ?
+            row = self._conn.execute("SELECT COUNT(*) FROM reasoning_cache").fetchone()
+            total = int(row[0] if row else 0)
+            if total > self.max_rows:
+                cursor = self._conn.execute(
+                    """
+                    DELETE FROM reasoning_cache
+                    WHERE key NOT IN (
+                        SELECT key
+                        FROM reasoning_cache
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (self.max_rows,),
                 )
-                """,
-                (self.max_rows,),
-            )
-            deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+                deleted += cursor.rowcount if cursor.rowcount != -1 else 0
         return deleted
