@@ -28,7 +28,7 @@ DEFAULT_VERBOSE = False
 DEFAULT_REQUEST_TIMEOUT = 300.0
 DEFAULT_MAX_REQUEST_BODY_BYTES = 20 * 1024 * 1024
 DEFAULT_CORS = False
-DEFAULT_MISSING_REASONING_STRATEGY = "recover"
+DEFAULT_MISSING_REASONING_STRATEGY = "synthesize"
 DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 DEFAULT_REASONING_CACHE_MAX_ROWS = 100_000
 
@@ -186,7 +186,7 @@ def normalize_thinking(value: Any) -> str:
 
 def normalize_missing_reasoning_strategy(value: Any) -> str:
     strategy = as_str(value, DEFAULT_MISSING_REASONING_STRATEGY).strip().lower()
-    if strategy in {"recover", "reject"}:
+    if strategy in {"synthesize", "recover", "reject"}:
         return strategy
     return DEFAULT_MISSING_REASONING_STRATEGY
 

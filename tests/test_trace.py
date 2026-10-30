@@ -184,6 +184,8 @@ class TraceIntegrationTests(unittest.TestCase):
             upstream_base_url=self.upstream.url,
             upstream_model="deepseek-v4-pro",
             ngrok=False,
+            # The trace test below asserts the opt-in drop-based recovery path.
+            missing_reasoning_strategy="recover",
         )
         proxy.reasoning_store = self.store
         proxy.trace_writer = self.writer

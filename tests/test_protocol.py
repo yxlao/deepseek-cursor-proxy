@@ -542,7 +542,53 @@ class ThinkingDisabledTests(_StrictUpstreamCase):
         self.assertNotIn("reasoning_content", sent["messages"][1])
 
 
+class SynthesizeModeTests(_StrictUpstreamCase):
+    """Default strategy: fill missing reasoning, never drop the history."""
+
+    def test_keeps_full_history_with_empty_reasoning(self) -> None:
+        status, response = _post(
+            f"{self.proxy.url}/v1/chat/completions",
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    {"role": "system", "content": "Be brief."},
+                    {"role": "user", "content": "old work"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": CALL_ID_1,
+                                "type": "function",
+                                "function": {"name": "get_date", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": CALL_ID_1,
+                        "content": "2026-04-24",
+                    },
+                    {"role": "user", "content": "Thanks. What about Saturday?"},
+                ],
+            },
+        )
+        self.assertEqual(status, 200, response)
+        sent = StrictFakeDeepSeek.requests[-1]
+        self.assertEqual(
+            [m["role"] for m in sent["messages"]],
+            ["system", "user", "assistant", "tool", "user"],
+        )
+        self.assertEqual(sent["messages"][2]["reasoning_content"], "")
+        self.assertEqual(
+            sent["messages"][-1]["content"], "Thanks. What about Saturday?"
+        )
+
+
 class RecoveryTests(_StrictUpstreamCase):
+    # Recovery is opt-in now: the default synthesize strategy keeps history.
+    config_overrides = {"missing_reasoning_strategy": "recover"}
+
     def test_cold_cache_recovers_to_latest_user_with_notice(self) -> None:
         """Stale tool history with no cached reasoning: proxy keeps only
         the latest user message + recovery system message and prefixes a

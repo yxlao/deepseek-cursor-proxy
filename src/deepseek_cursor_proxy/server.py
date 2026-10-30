@@ -967,10 +967,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--missing-reasoning-strategy",
-        choices=["recover", "reject"],
+        choices=["synthesize", "recover", "reject"],
         help=(
             "What to do when required reasoning_content is missing: "
-            "recover (friendly default) or reject (strict debugging mode)"
+            "synthesize (default, keeps the full history), recover (drops "
+            "history until upstream accepts), or reject (strict debugging mode)"
         ),
     )
     parser.add_argument(
@@ -1036,11 +1037,12 @@ def log_context_summary(prepared: Any) -> None:
         )
         return
     LOG.info(
-        "├ context status=%s missing=%s recovered=%s dropped=%s",
+        "├ context status=%s missing=%s recovered=%s dropped=%s synthesized=%s",
         status,
         format_count(prepared.missing_reasoning_messages),
         format_count(prepared.recovered_reasoning_messages),
         format_count(prepared.recovery_dropped_messages),
+        format_count(getattr(prepared, "synthesized_reasoning_messages", 0)),
     )
 
 
@@ -1067,6 +1069,8 @@ def log_stats_summary(usage: dict[str, Any] | None) -> None:
 def context_status(prepared: Any) -> str:
     if prepared.recovered_reasoning_messages:
         return "recovered"
+    if getattr(prepared, "synthesized_reasoning_messages", 0):
+        return "synthesized"
     if prepared.missing_reasoning_messages:
         return "missing"
     return "ok"
