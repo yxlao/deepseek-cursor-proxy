@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 from deepseek_cursor_proxy.config import ProxyConfig
 from deepseek_cursor_proxy.reasoning_store import (
@@ -551,6 +552,150 @@ class CrossModeAndModelTests(unittest.TestCase):
             prepared.payload["messages"][4]["reasoning_content"],
             "The tool result is enough to answer.",
         )
+
+    def test_synthesize_strategy_keeps_history_when_reasoning_is_missing(self) -> None:
+        tool_call = {
+            "id": "call_missing",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    {"role": "system", "content": "Agent mode."},
+                    {"role": "user", "content": "read it"},
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                    {"role": "tool", "tool_call_id": "call_missing", "content": "data"},
+                    {"role": "user", "content": "now summarize"},
+                ],
+            },
+            ProxyConfig(missing_reasoning_strategy="synthesize"),
+            self.store,
+        )
+
+        # DeepSeek accepts an empty reasoning_content, so the proxy fills the
+        # gap instead of dropping history (which makes the model start over).
+        self.assertEqual(prepared.synthesized_reasoning_messages, 1)
+        self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(prepared.recovery_dropped_messages, 0)
+        self.assertEqual(len(prepared.payload["messages"]), 5)
+        self.assertEqual(prepared.payload["messages"][2]["reasoning_content"], "")
+
+    def test_compacted_summary_and_recent_turns_survive_reasoning_loss(self) -> None:
+        # Cursor compacts a long session by replacing the old transcript with a
+        # summary and keeping the latest tool turns. Their reasoning_content is
+        # no longer reachable, but neither the summary nor any other message may
+        # be dropped: DeepSeek accepts an empty reasoning_content string.
+        summary = (
+            "[Summary of previous conversation]\n"
+            "Refactored auth.py; tests pass; still to do: fix logout."
+        )
+        old_tool_call = {
+            "id": "call_compacted_1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path": "auth.py"}'},
+        }
+        recent_tool_call = {
+            "id": "call_compacted_2",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path": "test_auth.py"}'},
+        }
+        messages = [
+            {"role": "system", "content": "Agent mode."},
+            {"role": "user", "content": summary},
+            {"role": "user", "content": "fix the old parser"},
+            {"role": "assistant", "content": "", "tool_calls": [old_tool_call]},
+            {
+                "role": "tool",
+                "tool_call_id": "call_compacted_1",
+                "content": "auth code",
+            },
+            {"role": "assistant", "content": "Parser now accepts CRLF."},
+            {"role": "user", "content": "add a test"},
+            {"role": "assistant", "content": "", "tool_calls": [recent_tool_call]},
+            {
+                "role": "tool",
+                "tool_call_id": "call_compacted_2",
+                "content": "test code",
+            },
+            {"role": "user", "content": "what is left?"},
+        ]
+
+        prepared = prepare_upstream_request(
+            {"model": "deepseek-v4-pro", "messages": messages},
+            ProxyConfig(),
+            self.store,
+        )
+
+        sent = prepared.payload["messages"]
+        self.assertEqual(prepared.synthesized_reasoning_messages, 3)
+        self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(prepared.recovery_dropped_messages, 0)
+        self.assertEqual(len(sent), len(messages))
+        self.assertEqual([m["role"] for m in sent], [m["role"] for m in messages])
+        self.assertEqual([m["content"] for m in sent], [m["content"] for m in messages])
+        self.assertTrue(
+            sent[1]["content"].startswith("[Summary of previous conversation]")
+        )
+        # Assistant turns that follow tool results also need a reasoning string.
+        for index in (3, 5, 7):
+            self.assertEqual(sent[index]["reasoning_content"], "")
+        self.assertEqual(sent[4]["tool_call_id"], "call_compacted_1")
+        self.assertEqual(sent[8]["tool_call_id"], "call_compacted_2")
+
+    def test_scope_hash_is_skipped_for_messages_without_tool_context(self) -> None:
+        # conversation_scope serializes and hashes the whole transcript. Doing
+        # that for every assistant message made preparation quadratic in the
+        # length of the session, so the count must not grow with it.
+        tool_call = {
+            "id": "call_scope",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }
+        config = ProxyConfig(missing_reasoning_strategy="synthesize")
+
+        def payload(assistant_turns: int, with_tool_turn: bool) -> dict:
+            messages: list[dict] = [
+                {"role": "system", "content": "Agent mode."},
+                {"role": "user", "content": "start"},
+            ]
+            for step in range(assistant_turns):
+                if with_tool_turn and step == 0:
+                    messages.append(
+                        {"role": "assistant", "content": "", "tool_calls": [tool_call]}
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": "data",
+                        }
+                    )
+                else:
+                    messages.append({"role": "assistant", "content": f"answer {step}"})
+                messages.append({"role": "user", "content": f"next {step}"})
+            return {"model": "deepseek-v4-pro", "messages": messages}
+
+        with mock.patch(
+            "deepseek_cursor_proxy.transform.conversation_scope",
+            wraps=conversation_scope,
+        ) as scope:
+            prepare_upstream_request(payload(1, False), config, self.store)
+            short_history_calls = scope.call_count
+            scope.reset_mock()
+            prepare_upstream_request(payload(8, False), config, self.store)
+            long_history_calls = scope.call_count
+            scope.reset_mock()
+            prepare_upstream_request(payload(8, True), config, self.store)
+            tool_turn_calls = scope.call_count
+
+        # Two calls record the scopes a response is filed under; no assistant
+        # message here needs a lookup, so a longer history changes nothing.
+        self.assertEqual(short_history_calls, 2)
+        self.assertEqual(long_history_calls, short_history_calls)
+        # A message that does ask the store costs exactly one extra scope.
+        self.assertEqual(tool_turn_calls, long_history_calls + 1)
 
     def test_portable_turn_cache_isolated_for_reused_tool_call_id(self) -> None:
         # Two different conversations both happen to reuse the same

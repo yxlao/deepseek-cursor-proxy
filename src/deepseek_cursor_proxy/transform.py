@@ -122,6 +122,7 @@ class PreparedRequest:
     recovery_steps: list[dict[str, Any]] = field(default_factory=list)
     continued_recovery_boundary: bool = False
     retired_prefix_messages: int = 0
+    synthesized_reasoning_messages: int = 0
 
 
 def normalize_reasoning_effort(value: Any) -> str:
@@ -277,7 +278,16 @@ def normalize_message(
                 needs_reasoning = assistant_needs_reasoning_for_tool_context(
                     normalized, prior_messages
                 )
-                lookup_scope = conversation_scope(prior_messages, cache_namespace)
+                # The scope serializes and hashes the whole history, so it is
+                # only worth computing for messages that will look something up.
+                # Most assistant messages do not, and a long session has
+                # hundreds of them: paying for each one turned preparation into
+                # a quadratic scan of the transcript.
+                lookup_scope = (
+                    conversation_scope(prior_messages, cache_namespace)
+                    if needs_reasoning
+                    else ""
+                )
                 lookup_keys = (
                     reasoning_lookup_keys(
                         normalized,
@@ -820,6 +830,7 @@ def prepare_upstream_request(
     recovery_dropped_messages = 0
     recovery_notice = None
     recovery_steps: list[dict[str, Any]] = []
+    synthesized_count = 0
     if thinking_enabled and config.missing_reasoning_strategy == "recover":
         boundary = active_messages_from_recovery_boundary(pre_repair_messages)
         if boundary is not None:
@@ -836,6 +847,15 @@ def prepare_upstream_request(
             keep_reasoning=not thinking_disabled,
         )
     )
+    if missing_indexes and config.missing_reasoning_strategy == "synthesize":
+        # DeepSeek only requires thinking-mode assistant messages to carry a
+        # reasoning_content string; it does not verify the value. Filling the
+        # gaps keeps the conversation intact after Cursor compacts or rewrites
+        # history, where dropping messages makes the model start from scratch.
+        synthesized_count = len(missing_indexes)
+        for missing_index in missing_indexes:
+            messages[missing_index]["reasoning_content"] = ""
+        missing_indexes = []
     while missing_indexes and config.missing_reasoning_strategy == "recover":
         recovered_messages, dropped_messages, notice, recovery_step = (
             recover_messages_from_missing_reasoning(messages, missing_indexes)
@@ -884,6 +904,7 @@ def prepare_upstream_request(
         recovery_steps=recovery_steps,
         continued_recovery_boundary=continued_recovery_boundary,
         retired_prefix_messages=retired_prefix_messages,
+        synthesized_reasoning_messages=synthesized_count,
     )
 
 

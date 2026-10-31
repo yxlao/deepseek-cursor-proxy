@@ -117,6 +117,8 @@ deepseek-cursor-proxy --ngrok-url https://your-subdomain.ngrok.dev
 deepseek-cursor-proxy --port 9000
 ```
 
+**Upgrading from an older version?** `config.yaml` is written once and never rewritten, so an existing file still says `missing_reasoning_strategy: recover`. That strategy drops the conversation down to the last user message when cached `reasoning_content` cannot be matched — which is exactly what happens after Cursor compacts a long chat. Delete the line (the default is `synthesize`) or set it to `synthesize` to keep the whole history, summary included.
+
 ### Step 3: Add Cursor Custom Model
 
 In Cursor, add the DeepSeek custom model and point it at this proxy:

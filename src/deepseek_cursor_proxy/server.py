@@ -12,7 +12,6 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 import zlib
 
 from .config import (
@@ -28,6 +27,7 @@ from .logging import (
 from .reasoning_store import ReasoningStore, conversation_scope
 from .streaming import CursorReasoningDisplayAdapter, StreamAccumulator
 from .trace import TraceRequest, TraceWriter
+from .transport import UpstreamConnectionPool
 from .tunnel import NgrokTunnel, local_tunnel_target
 from .transform import (
     RECOVERY_NOTICE_CONTENT,
@@ -50,6 +50,16 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     config: ProxyConfig
     reasoning_store: ReasoningStore
     trace_writer: TraceWriter | None
+    upstream_pool: UpstreamConnectionPool
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.upstream_pool = UpstreamConnectionPool()
+
+    def server_close(self) -> None:
+        # Idle upstream sockets outlive the request that opened them.
+        self.upstream_pool.close()
+        super().server_close()
 
 
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
@@ -66,6 +76,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
     @property
     def trace_writer(self) -> TraceWriter | None:
         return getattr(self.server, "trace_writer", None)
+
+    @property
+    def upstream_pool(self) -> UpstreamConnectionPool:
+        return self.server.upstream_pool  # type: ignore[return-value]
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
@@ -230,13 +244,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 headers=upstream_headers,
                 body_bytes=upstream_body,
             )
-        request = Request(
-            upstream_url,
-            data=upstream_body,
-            method="POST",
-            headers=upstream_headers,
-        )
-
         if self.config.verbose:
             log_send_summary(prepared)
         spinner = TerminalSpinner(
@@ -247,7 +254,13 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         try:
             if self.config.verbose:
                 LOG.info("forwarding to %s", upstream_url)
-            response = urlopen(request, timeout=self.config.request_timeout)
+            response = self.upstream_pool.request(
+                "POST",
+                upstream_url,
+                body=upstream_body,
+                headers=upstream_headers,
+                timeout=self.config.request_timeout,
+            )
         except HTTPError as exc:
             spinner.stop()
             LOG.warning(
@@ -538,6 +551,15 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         body = read_response_body(exc)
         if self.config.verbose:
             log_bytes("upstream error body", body)
+        else:
+            # The body is forwarded to the client verbatim, so it is the only
+            # record of why the turn failed. Keep one line of it without
+            # switching the whole proxy into verbose mode.
+            LOG.warning(
+                "upstream error body status=%s %s",
+                exc.code,
+                describe_error_body(body),
+            )
         headers = {
             "Content-Type": exc.headers.get("Content-Type", "application/json"),
             "Content-Length": str(len(body)),
@@ -575,6 +597,14 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         body = read_response_body(response)
         upstream_body = body
         usage = usage_from_body(upstream_body)
+        upstream_status = getattr(response, "status", 200)
+        upstream_content_type = response.headers.get("Content-Type", "application/json")
+        upstream_headers = response_headers(response)
+        # The body is in memory, so the socket can serve the next turn now.
+        # The enclosing `with response` would release it only after the body
+        # reaches the client, which left the pool empty for as long as the
+        # write took and made reuse depend on timing.
+        response.close()
         try:
             body = rewrite_response_body(
                 body,
@@ -596,13 +626,13 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             log_bytes("cursor response body", body)
 
         headers = {
-            "Content-Type": response.headers.get("Content-Type", "application/json"),
+            "Content-Type": upstream_content_type,
             "Content-Length": str(len(body)),
         }
         if trace is not None:
             trace.record_upstream_response(
-                status=getattr(response, "status", 200),
-                headers=response_headers(response),
+                status=upstream_status,
+                headers=upstream_headers,
                 body=upstream_body,
                 stream=False,
             )
@@ -613,13 +643,13 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             if isinstance(upstream_payload, dict):
                 trace.record_usage(upstream_payload.get("usage"))
             trace.record_cursor_response(
-                status=getattr(response, "status", 200),
+                status=upstream_status,
                 headers=headers,
                 body=body,
             )
 
         sent_headers = self._send_response_headers(
-            getattr(response, "status", 200),
+            upstream_status,
             [
                 ("Content-Type", headers["Content-Type"]),
                 ("Content-Length", headers["Content-Length"]),
@@ -805,6 +835,11 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return line, False, recovery_notice, None
 
+        if isinstance(chunk, dict) and chunk.get("error"):
+            # DeepSeek can abort a turn inside a 200 stream. The frame reaches
+            # the client untouched, so it is the only trace of the failure.
+            LOG.warning("upstream stream error %s", describe_error_body(data))
+
         if isinstance(chunk, dict):
             if recovery_notice and inject_recovery_notice(chunk, recovery_notice):
                 recovery_notice = None
@@ -967,10 +1002,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--missing-reasoning-strategy",
-        choices=["recover", "reject"],
+        choices=["synthesize", "recover", "reject"],
         help=(
             "What to do when required reasoning_content is missing: "
-            "recover (friendly default) or reject (strict debugging mode)"
+            "synthesize (default, keeps the full history), recover (drops "
+            "history until upstream accepts), or reject (strict debugging mode)"
         ),
     )
     parser.add_argument(
@@ -1000,6 +1036,29 @@ def log_bytes(label: str, body: bytes) -> None:
         LOG.info("%s:\n%s", label, body.decode("utf-8", errors="replace"))
         return
     log_json(label, payload)
+
+
+def describe_error_body(body: bytes) -> str:
+    """Collapse an upstream error payload into one log line.
+
+    The client receives the body untouched, so the log needs enough of it to
+    tell a rate limit from an expired key or a bad request: the ``error``
+    fields when the payload is JSON, the raw text otherwise.
+    """
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return "body=" + body.decode("utf-8", errors="replace").replace("\n", " ")[:300]
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        parts = [
+            f"{name}={error[name]}"
+            for name in ("type", "code", "message")
+            if error.get(name)
+        ]
+        if parts:
+            return " ".join(parts)[:400]
+    return "body=" + json.dumps(payload, ensure_ascii=False)[:300]
 
 
 def usage_from_body(body: bytes) -> dict[str, Any] | None:
@@ -1036,11 +1095,12 @@ def log_context_summary(prepared: Any) -> None:
         )
         return
     LOG.info(
-        "├ context status=%s missing=%s recovered=%s dropped=%s",
+        "├ context status=%s missing=%s recovered=%s dropped=%s synthesized=%s",
         status,
         format_count(prepared.missing_reasoning_messages),
         format_count(prepared.recovered_reasoning_messages),
         format_count(prepared.recovery_dropped_messages),
+        format_count(getattr(prepared, "synthesized_reasoning_messages", 0)),
     )
 
 
@@ -1067,6 +1127,8 @@ def log_stats_summary(usage: dict[str, Any] | None) -> None:
 def context_status(prepared: Any) -> str:
     if prepared.recovered_reasoning_messages:
         return "recovered"
+    if getattr(prepared, "synthesized_reasoning_messages", 0):
+        return "synthesized"
     if prepared.missing_reasoning_messages:
         return "missing"
     return "ok"
