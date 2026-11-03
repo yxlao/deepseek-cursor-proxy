@@ -173,6 +173,53 @@ class RequestPreparationTests(unittest.TestCase):
         self.assertIn("parallel_tool_calls", log)
         self.assertIn("service_tier", log)
 
+    def test_configured_alias_sends_another_model_and_echoes_the_client_name(
+        self,
+    ) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v41-flash-1017",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            ProxyConfig(model_aliases={"deepseek-v41-flash-1017": "deepseek-flash"}),
+            self.store,
+        )
+        self.assertEqual(prepared.payload["model"], "deepseek-flash")
+        self.assertEqual(prepared.original_model, "deepseek-v41-flash-1017")
+
+        body = json.dumps(
+            {
+                "id": "chatcmpl",
+                "object": "chat.completion",
+                "model": "deepseek-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "Final."},
+                    }
+                ],
+            }
+        ).encode()
+        rewritten = rewrite_response_body(
+            body,
+            prepared.original_model,
+            self.store,
+            prepared.payload["messages"],
+        )
+        self.assertEqual(json.loads(rewritten)["model"], "deepseek-v41-flash-1017")
+
+    def test_model_without_alias_keeps_its_name_upstream(self) -> None:
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            ProxyConfig(model_aliases={"deepseek-v41-flash-1017": "deepseek-flash"}),
+            self.store,
+        )
+        self.assertEqual(prepared.payload["model"], "deepseek-v4-pro")
+
     def test_non_deepseek_model_is_rewritten_with_warning(self) -> None:
         with self.assertLogs("deepseek_cursor_proxy", level="WARNING") as captured:
             prepared = prepare_upstream_request(

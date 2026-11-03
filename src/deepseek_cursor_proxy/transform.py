@@ -679,6 +679,10 @@ def assistant_needs_reasoning_for_tool_context(
 
 
 def upstream_model_for(original_model: str, config: ProxyConfig) -> str:
+    alias = config.model_aliases.get(original_model)
+    if alias is not None:
+        # The client keeps its own name: it is what the response echoes back.
+        return alias
     if original_model.startswith("deepseek-"):
         return original_model
     LOG.warning(

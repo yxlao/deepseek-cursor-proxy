@@ -201,6 +201,41 @@ class ConfigTests(unittest.TestCase):
             config = ProxyConfig.from_file(config_path=config_path)
         self.assertIsNone(config.ngrok_url)
 
+    def test_model_aliases_are_read_and_incomplete_entries_are_dropped(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text(
+                "model_aliases:\n"
+                "  deepseek-v41-flash-1017: deepseek-flash\n"
+                '  "  spaced-name  ": "  deepseek-v4-pro  "\n'
+                "  empty-target: ''\n",
+                encoding="utf-8",
+            )
+
+            config = ProxyConfig.from_file(config_path=config_path)
+
+        self.assertEqual(
+            config.model_aliases,
+            {
+                "deepseek-v41-flash-1017": "deepseek-flash",
+                "spaced-name": "deepseek-v4-pro",
+            },
+        )
+
+    def test_model_aliases_are_empty_when_absent_or_not_a_mapping(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            absent_path = Path(temp_dir) / "absent.yaml"
+            absent_path.write_text("model: deepseek-v4-pro\n", encoding="utf-8")
+            self.assertEqual(
+                ProxyConfig.from_file(config_path=absent_path).model_aliases, {}
+            )
+
+            broken_path = Path(temp_dir) / "broken.yaml"
+            broken_path.write_text("model_aliases: deepseek-flash\n", encoding="utf-8")
+            self.assertEqual(
+                ProxyConfig.from_file(config_path=broken_path).model_aliases, {}
+            )
+
     def test_relative_reasoning_content_path_in_config_is_relative_to_config_file(
         self,
     ) -> None:
