@@ -73,11 +73,16 @@ def message_signature(message: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _sha256_json(payload: Any) -> str:
-    canonical = json.dumps(
+def _canonical_json(payload: Any) -> str:
+    # Every cache key is a hash of this serialization, and ScopeIndex rebuilds
+    # the same bytes message by message, so the options live in one place.
+    return json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _sha256_json(payload: Any) -> str:
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def canonical_scope_message(message: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +130,72 @@ def turn_context_signature(prior_messages: list[dict[str, Any]]) -> str:
     return _sha256_json(context_messages)
 
 
+class ScopeIndex:
+    """Incremental form of ``conversation_scope`` and ``turn_context_signature``.
+
+    Both values are SHA-256 over a JSON array of messages, and preparation asks
+    for them on behalf of every assistant message whose reasoning it tries to
+    restore. Recomputing them per message reserializes the whole transcript each
+    time, so a long agent session costs O(n^2): a 3000-message transcript took
+    25 s of preparation, and concurrent agents queued behind it.
+
+    This feeds SHA-256 the same bytes that ``_sha256_json`` would produce, but
+    serializes each message once, when it is appended.
+    """
+
+    def __init__(self, cache_namespace: str = "") -> None:
+        # json.dumps writes the keys of a dict in sorted order, so "messages"
+        # comes first and the namespace is a fixed tail of the payload.
+        if cache_namespace:
+            self._scope = hashlib.sha256(b'{"messages":[')
+            self._scope_suffix = (
+                b'],"namespace":'
+                + _canonical_json(cache_namespace).encode("utf-8")
+                + b"}"
+            )
+        else:
+            self._scope = hashlib.sha256(b"[")
+            self._scope_suffix = b"]"
+        self._scope_items = 0
+        # turn_context_signature hashes the messages from the first of the run
+        # of consecutive user messages that precedes the last one, system
+        # messages excluded. While messages are appended, that start moves only
+        # when a user message follows something other than a user message.
+        self._turn = hashlib.sha256(b"[")
+        self._turn_items = 0
+        self._previous_role: Any = None
+        self.messages: list[dict[str, Any]] = []
+
+    def append(self, message: dict[str, Any]) -> None:
+        encoded = _canonical_json(canonical_scope_message(message)).encode("utf-8")
+        if self._scope_items:
+            self._scope.update(b",")
+        self._scope.update(encoded)
+        self._scope_items += 1
+
+        role = message.get("role")
+        if role == "user" and self._previous_role != "user":
+            self._turn = hashlib.sha256(b"[")
+            self._turn_items = 0
+        if role != "system":
+            if self._turn_items:
+                self._turn.update(b",")
+            self._turn.update(encoded)
+            self._turn_items += 1
+        self._previous_role = role
+        self.messages.append(message)
+
+    def conversation_scope(self) -> str:
+        hasher = self._scope.copy()
+        hasher.update(self._scope_suffix)
+        return hasher.hexdigest()
+
+    def turn_context_signature(self) -> str:
+        hasher = self._turn.copy()
+        hasher.update(b"]")
+        return hasher.hexdigest()
+
+
 def scoped_reasoning_keys(message: dict[str, Any], scope: str) -> list[str]:
     keys = [f"scope:{scope}:signature:{message_signature(message)}"]
     keys.extend(
@@ -153,26 +224,31 @@ def portable_reasoning_keys(
 ) -> list[str]:
     if not cache_namespace:
         return []
+    return portable_reasoning_keys_for_turn(
+        message, cache_namespace, turn_context_signature(prior_messages)
+    )
 
-    turn_signature = turn_context_signature(prior_messages)
-    keys = [
-        f"namespace:{cache_namespace}:turn:{turn_signature}:"
-        f"signature:{message_signature(message)}"
-    ]
+
+def portable_reasoning_keys_for_turn(
+    message: dict[str, Any],
+    cache_namespace: str,
+    turn_signature: str,
+) -> list[str]:
+    if not cache_namespace:
+        return []
+
+    prefix = f"namespace:{cache_namespace}:turn:{turn_signature}:"
+    keys = [f"{prefix}signature:{message_signature(message)}"]
     keys.extend(
-        f"namespace:{cache_namespace}:turn:{turn_signature}:"
-        f"tool_call:{tool_call_id}"
-        for tool_call_id in tool_call_ids(message)
+        f"{prefix}tool_call:{tool_call_id}" for tool_call_id in tool_call_ids(message)
     )
     keys.extend(
-        f"namespace:{cache_namespace}:turn:{turn_signature}:"
-        f"tool_call_signature:{tool_call_signature(tool_call)}"
+        f"{prefix}tool_call_signature:{tool_call_signature(tool_call)}"
         for tool_call in (message.get("tool_calls") or [])
         if isinstance(tool_call, dict)
     )
     keys.extend(
-        f"namespace:{cache_namespace}:turn:{turn_signature}:" f"tool_name:{tool_name}"
-        for tool_name in tool_call_names(message)
+        f"{prefix}tool_name:{tool_name}" for tool_name in tool_call_names(message)
     )
     return keys
 
@@ -291,11 +367,13 @@ class ReasoningStore:
         message: dict[str, Any],
         reasoning: str,
         cache_namespace: str,
-        prior_messages: list[dict[str, Any]],
+        turn_signature: str,
     ) -> int:
         if not isinstance(reasoning, str):
             return 0
-        keys = portable_reasoning_keys(message, cache_namespace, prior_messages)
+        keys = portable_reasoning_keys_for_turn(
+            message, cache_namespace, turn_signature
+        )
         if not keys:
             return 0
         message_with_reasoning = dict(message)

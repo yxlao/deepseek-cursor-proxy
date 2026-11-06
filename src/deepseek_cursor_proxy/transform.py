@@ -10,12 +10,12 @@ from .config import ProxyConfig
 from .logging import LOG
 from .reasoning_store import (
     ReasoningStore,
+    ScopeIndex,
     conversation_scope,
     message_signature,
     tool_call_ids,
     tool_call_names,
     tool_call_signature,
-    turn_context_signature,
 )
 from .streaming import fold_reasoning_into_content
 
@@ -237,11 +237,12 @@ def normalize_tool_choice(tool_choice: Any) -> Any:
 def normalize_message(
     message: Any,
     store: ReasoningStore | None,
-    prior_messages: list[dict[str, Any]],
+    scope_index: ScopeIndex,
     cache_namespace: str,
     repair_reasoning: bool,
     keep_reasoning: bool,
 ) -> tuple[dict[str, Any], bool, bool, dict[str, Any] | None]:
+    prior_messages = scope_index.messages
     if not isinstance(message, dict):
         message = {"role": "user", "content": str(message)}
     normalized = {key: value for key, value in message.items() if key in MESSAGE_FIELDS}
@@ -277,13 +278,13 @@ def normalize_message(
                 needs_reasoning = assistant_needs_reasoning_for_tool_context(
                     normalized, prior_messages
                 )
-                lookup_scope = conversation_scope(prior_messages, cache_namespace)
+                lookup_scope = scope_index.conversation_scope()
                 lookup_keys = (
                     reasoning_lookup_keys(
                         normalized,
                         lookup_scope,
                         cache_namespace,
-                        prior_messages,
+                        scope_index.turn_context_signature(),
                     )
                     if needs_reasoning
                     else []
@@ -302,7 +303,7 @@ def normalize_message(
                                     normalized,
                                     restored,
                                     cache_namespace,
-                                    prior_messages,
+                                    scope_index.turn_context_signature(),
                                 )
                             break
                 if needs_reasoning and not patched:
@@ -329,7 +330,7 @@ def normalize_message(
                     "had_reasoning_content": True,
                     "patched": False,
                     "missing": False,
-                    "lookup_scope": conversation_scope(prior_messages, cache_namespace),
+                    "lookup_scope": scope_index.conversation_scope(),
                     "message_signature": message_signature(normalized),
                     "tool_call_ids": tool_call_ids(normalized),
                     "lookup_keys": [],
@@ -347,7 +348,7 @@ def reasoning_lookup_keys(
     message: dict[str, Any],
     scope: str,
     cache_namespace: str = "",
-    prior_messages: list[dict[str, Any]] | None = None,
+    turn_signature: str = "",
 ) -> list[dict[str, Any]]:
     keys = [
         {
@@ -391,8 +392,7 @@ def reasoning_lookup_keys(
         }
         for tool_name in tool_call_names(message)
     )
-    if cache_namespace and prior_messages is not None:
-        turn_signature = turn_context_signature(prior_messages)
+    if cache_namespace and turn_signature:
         keys.append(
             {
                 "kind": "portable_message_signature",
@@ -462,7 +462,10 @@ def normalize_messages(
 ) -> tuple[list[dict[str, Any]], int, list[int], list[dict[str, Any]]]:
     if not isinstance(messages, list):
         return [], 0, [], []
-    normalized_messages: list[dict[str, Any]] = []
+    # One index replaces the per-message rescan of the whole transcript that
+    # conversation_scope() and turn_context_signature() did: on a 3000-message
+    # agent session that rescan was 25 s of quadratic work per request.
+    scope_index = ScopeIndex(cache_namespace)
     patched_count = 0
     missing_indexes: list[int] = []
     diagnostics: list[dict[str, Any]] = []
@@ -470,19 +473,19 @@ def normalize_messages(
         normalized, patched, missing, diagnostic = normalize_message(
             message,
             store,
-            normalized_messages,
+            scope_index,
             cache_namespace,
             repair_reasoning,
             keep_reasoning,
         )
-        normalized_messages.append(normalized)
+        scope_index.append(normalized)
         if patched:
             patched_count += 1
         if missing:
-            missing_indexes.append(len(normalized_messages) - 1)
+            missing_indexes.append(len(scope_index.messages) - 1)
         if diagnostic is not None:
             diagnostics.append(diagnostic)
-    return normalized_messages, patched_count, missing_indexes, diagnostics
+    return scope_index.messages, patched_count, missing_indexes, diagnostics
 
 
 def has_recovery_notice(message: dict[str, Any]) -> bool:
