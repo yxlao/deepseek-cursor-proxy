@@ -5,7 +5,12 @@ import stat
 from tempfile import TemporaryDirectory
 import unittest
 
-from deepseek_cursor_proxy.reasoning_store import ReasoningStore, conversation_scope
+from deepseek_cursor_proxy.reasoning_store import (
+    ReasoningStore,
+    ScopeIndex,
+    conversation_scope,
+    turn_context_signature,
+)
 
 
 class ReasoningStoreTests(unittest.TestCase):
@@ -64,6 +69,63 @@ class ReasoningStoreTests(unittest.TestCase):
             )
         finally:
             store.close()
+
+
+class ScopeIndexTests(unittest.TestCase):
+    """ScopeIndex must reproduce the reference hashes for every prefix."""
+
+    transcripts = (
+        [],
+        [{"role": "system", "content": "system"}],
+        [{"role": "user", "content": "привет"}],
+        [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+        [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "user", "content": "c"},
+            {"role": "user", "content": "d"},
+        ],
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "a"},
+            {"role": "tool", "tool_call_id": "t", "content": "r"},
+            {"role": "assistant", "content": 'кавычки " и \\ и\n\t и emoji 🎵'},
+        ],
+    )
+
+    def test_hashes_match_reference_for_every_prefix(self) -> None:
+        for namespace in ("", "namespace:pro"):
+            for messages in self.transcripts:
+                index = ScopeIndex(namespace)
+                self.assertEqual(
+                    index.conversation_scope(), conversation_scope([], namespace)
+                )
+                self.assertEqual(
+                    index.turn_context_signature(), turn_context_signature([])
+                )
+                for position, message in enumerate(messages):
+                    index.append(message)
+                    prefix = messages[: position + 1]
+                    self.assertEqual(
+                        index.conversation_scope(),
+                        conversation_scope(prefix, namespace),
+                    )
+                    self.assertEqual(
+                        index.turn_context_signature(),
+                        turn_context_signature(prefix),
+                    )
+
+    def test_index_keeps_the_messages_it_hashed(self) -> None:
+        index = ScopeIndex("namespace:pro")
+        messages = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": ""},
+        ]
+
+        for message in messages:
+            index.append(message)
+
+        self.assertEqual(index.messages, messages)
 
 
 if __name__ == "__main__":
