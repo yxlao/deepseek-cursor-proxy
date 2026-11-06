@@ -127,6 +127,15 @@ In Cursor, add the DeepSeek custom model and point it at this proxy:
 
 The proxy respects the DeepSeek model name Cursor sends, such as `deepseek-v4-pro` or `deepseek-v4-flash`. The `model` field in `config.yaml` is used as a fallback only when a request does not include a model.
 
+If a Cursor model entry carries better metadata than the API name allows, send one name and use the other upstream:
+
+```yaml
+model_aliases:
+  deepseek-v41-flash-1017: deepseek-flash
+```
+
+Cursor labels `deepseek-v41-flash-1017` as a 1M-context model while the DeepSeek API accepts `deepseek-flash`, and user-added models without catalog metadata fall back to a smaller window. The alias map changes only what goes upstream; the response keeps the client's model name.
+
 For example, if ngrok dashboard shows `https://example.ngrok-free.dev`, use:
 
 ```text

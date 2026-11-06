@@ -59,6 +59,12 @@ reasoning_content_path: {REASONING_CONTENT_FILE_NAME}
 missing_reasoning_strategy: {DEFAULT_MISSING_REASONING_STRATEGY}
 reasoning_cache_max_age_seconds: {DEFAULT_REASONING_CACHE_MAX_AGE_SECONDS}
 reasoning_cache_max_rows: {DEFAULT_REASONING_CACHE_MAX_ROWS}
+
+# Optional: send a client-side model name upstream under a different name.
+# Cursor labels `deepseek-v41-flash-1017` as a 1M-context model, while the
+# DeepSeek API accepts `deepseek-flash`. Uncomment to bridge the two.
+# model_aliases:
+#   deepseek-v41-flash-1017: deepseek-flash
 """
 
 
@@ -159,6 +165,25 @@ def as_float(value: Any, default: float) -> float:
         return default
 
 
+def as_model_aliases(value: Any) -> dict[str, str]:
+    """Read the optional client-name -> upstream-name map.
+
+    A wrong entry would send the wrong model upstream, so only pairs of
+    non-empty strings are kept; anything else is dropped instead of failing
+    the whole config.
+    """
+    if value is MISSING or not isinstance(value, Mapping):
+        return {}
+    aliases: dict[str, str] = {}
+    for client_name, upstream_name in value.items():
+        source = str(client_name).strip()
+        target = str(upstream_name).strip() if upstream_name is not None else ""
+        if not source or not target:
+            continue
+        aliases[source] = target
+    return aliases
+
+
 def as_path(value: Any, default_path: Path, relative_base: Path) -> Path:
     if value is MISSING or value is None or value == "":
         return default_path
@@ -212,6 +237,7 @@ class ProxyConfig:
     ngrok: bool = DEFAULT_NGROK
     ngrok_url: str | None = None
     trace_dir: Path | None = None
+    model_aliases: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_file(
@@ -292,4 +318,7 @@ class ProxyConfig:
                 DEFAULT_NGROK,
             ),
             ngrok_url=as_optional_str(setting_value(settings, "ngrok_url")),
+            model_aliases=as_model_aliases(
+                setting_value(settings, "model_aliases"),
+            ),
         )
